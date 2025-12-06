@@ -428,30 +428,26 @@ bot.onTip(async (handler, event) => {
     }
 })
 
-// bot.start() returns a Hono app with webhook handlers on root path "/"
+// bot.start() returns a Hono app with webhook handlers on POST /
 const botApp = bot.start()
 
-// Create a new main app
+// Create wrapper app
 const app = new Hono()
 
 // Health check
 app.get('/', (c) => c.text('TipsoBot is running! 💸'))
 
-// Webhook endpoint - Towns expects this at /webhook
-// Forward these requests to botApp's root handler
-app.all('/webhook', async (c) => {
-    // botApp expects webhooks on "/" so we modify the path
-    const url = new URL(c.req.url)
-    url.pathname = '/'
-
-    // Create new request with modified path
-    const newReq = new Request(url.toString(), {
-        method: c.req.method,
-        headers: c.req.raw.headers,
-        body: c.req.raw.body,
-    })
-
-    // Forward to botApp
+// Webhook endpoint - proxy to botApp
+app.post('/webhook', async (c) => {
+    // botApp expects POST on /, so we create a new request to /
+    const newReq = new Request(
+        c.req.url.replace('/webhook', '/'),
+        {
+            method: 'POST',
+            headers: c.req.raw.headers,
+            body: await c.req.raw.clone().arrayBuffer(),
+        }
+    )
     return botApp.fetch(newReq)
 })
 
