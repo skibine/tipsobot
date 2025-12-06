@@ -1,10 +1,9 @@
 import { makeTownsBot, getSmartAccountFromUserId } from '@towns-protocol/bot'
-import { encodeFunctionData, parseUnits, hexToBytes, erc20Abi, formatUnits } from 'viem'
+import { parseUnits, hexToBytes, formatUnits, parseEther } from 'viem'
 import commands from './commands'
 
-// USDC on Base
-const USDC_ADDRESS = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913' as const
-const USDC_DECIMALS = 6
+// ETH on Base - native currency
+const ETH_DECIMALS = 18
 
 // Store pending tip confirmations
 const pendingTips = new Map<string, {
@@ -32,17 +31,17 @@ function parseAmountFromArgs(args: string[]): number | null {
 bot.onSlashCommand('help', async (handler, { channelId }) => {
     await handler.sendMessage(
         channelId,
-        '**TipsoBot - Send USDC tips on Base** 💸\n\n' +
+        '**TipsoBot - Send ETH tips on Base** 💸\n\n' +
             '**Commands:**\n' +
-            '• `/tip @username amount` - Send USDC to a user\n' +
+            '• `/tip @username amount` - Send ETH to a user\n' +
             '• `/tipsplit @user1 @user2 amount` - Split amount equally\n' +
-            '• `/donate amount` - Support the bot with USDC\n' +
+            '• `/donate amount` - Support the bot with ETH\n' +
             '• `/help` - Show this message\n' +
             '• `/time` - Current server time\n\n' +
             '**Examples:**\n' +
-            '• `/tip @alice 10` - Send 10 USDC to Alice\n' +
-            '• `/tipsplit @bob @charlie 20` - Send 10 USDC each\n' +
-            '• `/donate 5` - Donate 5 USDC to the bot\n'
+            '• `/tip @alice 0.001` - Send 0.001 ETH to Alice\n' +
+            '• `/tipsplit @bob @charlie 0.002` - Send 0.001 ETH each\n' +
+            '• `/donate 0.0005` - Donate 0.0005 ETH to the bot\n'
     )
 })
 
@@ -60,7 +59,7 @@ bot.onMessage(async (handler, event) => {
     if (isMentioned) {
         await handler.sendMessage(
             channelId,
-            '👋 Hi! I help you send USDC tips on Base.\n\nType `/help` to see all available commands!'
+            '👋 Hi! I help you send ETH tips on Base.\n\nType `/help` to see all available commands!'
         )
         return
     }
@@ -161,7 +160,7 @@ bot.onSlashCommand('tip', async (handler, event) => {
             value: {
                 id: requestId,
                 title: `💸 Confirm Tip`,
-                description: `Send ${amount} USDC to <@${recipient.userId}>?\n\nRecipient wallet: ${recipientWallet.slice(0, 6)}...${recipientWallet.slice(-4)}`,
+                description: `Send ${amount} ETH to <@${recipient.userId}>?\n\nRecipient wallet: ${recipientWallet.slice(0, 6)}...${recipientWallet.slice(-4)}`,
                 components: [
                     {
                         id: 'confirm',
@@ -249,7 +248,7 @@ bot.onSlashCommand('tipsplit', async (handler, event) => {
 
         // Build breakdown
         const breakdown = recipients
-            .map(r => `  • ${r.amount} USDC → <@${r.userId}>`)
+            .map(r => `  • ${r.amount} ETH → <@${r.userId}>`)
             .join('\n')
 
         // Send confirmation dialog
@@ -258,7 +257,7 @@ bot.onSlashCommand('tipsplit', async (handler, event) => {
             value: {
                 id: requestId,
                 title: `💸 Confirm Split Tip`,
-                description: `Split ${totalAmount} USDC between ${mentions.length} users (${splitAmount} each):\n\n${breakdown}`,
+                description: `Split ${totalAmount} ETH between ${mentions.length} users (${splitAmount} each):\n\n${breakdown}`,
                 components: [
                     {
                         id: 'confirm',
@@ -323,7 +322,7 @@ bot.onSlashCommand('donate', async (handler, event) => {
             value: {
                 id: requestId,
                 title: `❤️ Confirm Donation`,
-                description: `Donate ${amount} USDC to support TipsoBot?\n\nYour support helps keep this bot running! 🙏`,
+                description: `Donate ${amount} ETH to support TipsoBot?\n\nYour support helps keep this bot running! 🙏`,
                 components: [
                     {
                         id: 'confirm',
@@ -382,37 +381,27 @@ bot.onInteractionResponse(async (handler, event) => {
 
             // Send transaction request for each recipient
             for (const recipient of tipData.recipients) {
-                const amountWei = parseUnits(recipient.amount.toString(), USDC_DECIMALS)
+                const amountWei = parseEther(recipient.amount.toString())
 
-                console.log('[onInteractionResponse] Sending tx for:', recipient.userId, 'amount:', recipient.amount, 'USDC')
+                console.log('[onInteractionResponse] Sending tx for:', recipient.userId, 'amount:', recipient.amount, 'ETH')
                 console.log('[onInteractionResponse] Recipient wallet:', recipient.wallet)
                 console.log('[onInteractionResponse] Amount in wei:', amountWei.toString())
-                console.log('[onInteractionResponse] USDC contract:', USDC_ADDRESS)
                 console.log('[onInteractionResponse] Chain:', 'Base (8453)')
 
-                // Encode USDC transfer
-                const data = encodeFunctionData({
-                    abi: erc20Abi,
-                    functionName: 'transfer',
-                    args: [recipient.wallet, amountWei]
-                })
-
-                console.log('[onInteractionResponse] Encoded data:', data)
-
-                // Send transaction request to user
+                // Send transaction request to user (native ETH transfer)
                 await handler.sendInteractionRequest(event.channelId, {
                     case: 'transaction',
                     value: {
                         id: `tx-${form.requestId}-${recipient.userId}`,
-                        title: `Send ${recipient.amount} USDC`,
-                        description: `Transfer ${recipient.amount} USDC on Base\n\nTo: ${recipient.wallet.slice(0, 6)}...${recipient.wallet.slice(-4)}\n\n⚠️ Make sure you have:\n• ${recipient.amount} USDC on Base\n• ETH on Base for gas`,
+                        title: `Send ${recipient.amount} ETH`,
+                        description: `Transfer ${recipient.amount} ETH on Base\n\nTo: ${recipient.wallet.slice(0, 6)}...${recipient.wallet.slice(-4)}\n\n⚠️ Make sure you have:\n• ${recipient.amount} ETH on Base\n• Extra ETH for gas (~$0.01)`,
                         content: {
                             case: 'evm',
                             value: {
                                 chainId: '8453', // Base
-                                to: USDC_ADDRESS,
-                                value: '0',
-                                data,
+                                to: recipient.wallet,
+                                value: amountWei.toString(),
+                                data: '0x',
                                 signerWallet: undefined
                             }
                         }
@@ -424,21 +413,21 @@ bot.onInteractionResponse(async (handler, event) => {
 
             // Send success message
             if (form.requestId.startsWith('donate-')) {
-                await handler.sendMessage(event.channelId, `❤️ Thank you for your ${tipData.totalAmount} USDC donation! Your support means everything! 🙏`)
+                await handler.sendMessage(event.channelId, `❤️ Thank you for your ${tipData.totalAmount} ETH donation! Your support means everything! 🙏`)
             } else if (form.requestId.startsWith('tipsplit-')) {
                 const recipientList = tipData.recipients
                     .map(r => `<@${r.userId}>`)
                     .join(', ')
                 await handler.sendMessage(
                     event.channelId,
-                    `💸 Sending ${tipData.totalAmount} USDC split between ${recipientList}!`,
+                    `💸 Sending ${tipData.totalAmount} ETH split between ${recipientList}!`,
                     { mentions: tipData.recipients.map(r => ({ userId: r.userId, displayName: r.displayName })) }
                 )
             } else {
                 const recipient = tipData.recipients[0]
                 await handler.sendMessage(
                     event.channelId,
-                    `💸 Sending ${tipData.totalAmount} USDC to <@${recipient.userId}>!`,
+                    `💸 Sending ${tipData.totalAmount} ETH to <@${recipient.userId}>!`,
                     { mentions: [{ userId: recipient.userId, displayName: recipient.displayName }] }
                 )
             }
@@ -452,17 +441,15 @@ bot.onInteractionResponse(async (handler, event) => {
 
 // Handle direct tips to the bot (like using Towns native tip feature)
 bot.onTip(async (handler, event) => {
-    const { senderAddress, receiverAddress, amount, currency, channelId } = event
+    const { receiverAddress, amount, currency, channelId } = event
 
     // Check if tip is for the bot
     if (receiverAddress.toLowerCase() === bot.appAddress.toLowerCase()) {
-        const formattedAmount = currency.toLowerCase() === USDC_ADDRESS.toLowerCase()
-            ? formatUnits(amount, USDC_DECIMALS)
-            : formatUnits(amount, 18) // ETH or other tokens
+        const formattedAmount = formatUnits(amount, ETH_DECIMALS)
 
         await handler.sendMessage(
             channelId,
-            `❤️ Thank you for the tip! Received ${formattedAmount} ${currency.toLowerCase() === USDC_ADDRESS.toLowerCase() ? 'USDC' : 'tokens'}! 🙏`
+            `❤️ Thank you for the tip! Received ${formattedAmount} ETH! 🙏`
         )
     }
 })
