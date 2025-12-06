@@ -1,5 +1,6 @@
 import { makeTownsBot, getSmartAccountFromUserId } from '@towns-protocol/bot'
 import { encodeFunctionData, parseUnits, hexToBytes, erc20Abi, formatUnits } from 'viem'
+import { Hono } from 'hono'
 import commands from './commands'
 
 // USDC on Base
@@ -427,6 +428,31 @@ bot.onTip(async (handler, event) => {
     }
 })
 
-const app = bot.start()
+// bot.start() returns a Hono app with webhook handlers on root path "/"
+const botApp = bot.start()
+
+// Create a new main app
+const app = new Hono()
+
+// Health check
+app.get('/', (c) => c.text('TipsoBot is running! 💸'))
+
+// Webhook endpoint - Towns expects this at /webhook
+// Forward these requests to botApp's root handler
+app.all('/webhook', async (c) => {
+    // botApp expects webhooks on "/" so we modify the path
+    const url = new URL(c.req.url)
+    url.pathname = '/'
+
+    // Create new request with modified path
+    const newReq = new Request(url.toString(), {
+        method: c.req.method,
+        headers: c.req.raw.headers,
+        body: c.req.raw.body,
+    })
+
+    // Forward to botApp
+    return botApp.fetch(newReq)
+})
 
 export default app
