@@ -211,4 +211,9 @@ const app = bot.start()
 // Health check route
 app.get('/', (c) => c.text('TipsoBot is running! 💸'))
 
+// Webhook route for Towns
+app.post('/webhook', async (c) => {
+  return app.fetch(c.req)  // пробросить запрос в bot.start()
+})
+
 export default app
