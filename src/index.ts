@@ -431,14 +431,20 @@ bot.onTip(async (handler, event) => {
 // bot.start() returns a Hono app with webhook handlers
 const botApp = bot.start()
 
-// Create main app and mount bot app on /webhook path
+// Create main app
 const app = new Hono()
 
 // Health check on root
 app.get('/', (c) => c.text('TipsoBot is running! 💸'))
 
-// Mount the bot's webhook handlers at /webhook
-// This makes all bot handlers accessible at /webhook/*
-app.route('/webhook', botApp)
+// Webhook endpoint - forward requests to botApp
+app.all('/webhook', async (c) => {
+    // Bot expects webhook requests on root path
+    // Forward /webhook requests to botApp's root handler
+    const url = new URL(c.req.url)
+    url.pathname = '/'
+    const newReq = new Request(url, c.req.raw)
+    return botApp.fetch(newReq)
+})
 
 export default app
