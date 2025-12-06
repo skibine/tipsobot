@@ -16,7 +16,7 @@ const commands = [
         description: 'Tip a user with USDC',
     },
     {
-        name: 'tip-split',
+        name: 'tipsplit',
         description: 'Split tip between multiple users',
     },
     {
