@@ -207,4 +207,8 @@ bot.onInteractionResponse(async (handler, event) => {
 })
 
 const app = bot.start()
+
+// Health check route
+app.get('/', (c) => c.text('TipsoBot is running! 💸'))
+
 export default app
