@@ -1,5 +1,6 @@
 import { makeTownsBot, getSmartAccountFromUserId } from '@towns-protocol/bot'
 import { encodeFunctionData, parseUnits, hexToBytes, erc20Abi, formatUnits } from 'viem'
+import { Hono } from 'hono'
 import commands from './commands'
 
 // USDC on Base
@@ -417,9 +418,17 @@ bot.onTip(async (handler, event) => {
     }
 })
 
-const app = bot.start()
+// bot.start() returns a Hono app with webhook handlers
+const botApp = bot.start()
 
-// Health check route
+// Create main app and mount bot app on /webhook path
+const app = new Hono()
+
+// Health check on root
 app.get('/', (c) => c.text('TipsoBot is running! 💸'))
+
+// Mount the bot's webhook handlers at /webhook
+// This makes all bot handlers accessible at /webhook/*
+app.route('/webhook', botApp)
 
 export default app
