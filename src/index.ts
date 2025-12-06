@@ -36,13 +36,13 @@ bot.onSlashCommand('help', async (handler, { channelId }) => {
         '**TipsoBot - Send USDC tips on Base** 💸\n\n' +
             '**Commands:**\n' +
             '• `/tip @username amount` - Send USDC to a user\n' +
-            '• `/tip-split @user1 @user2 amount` - Split amount equally\n' +
+            '• `/tipsplit @user1 @user2 amount` - Split amount equally\n' +
             '• `/donate amount` - Support the bot with USDC\n' +
             '• `/help` - Show this message\n' +
             '• `/time` - Current server time\n\n' +
             '**Examples:**\n' +
             '• `/tip @alice 10` - Send 10 USDC to Alice\n' +
-            '• `/tip-split @bob @charlie 20` - Send 10 USDC each\n' +
+            '• `/tipsplit @bob @charlie 20` - Send 10 USDC each\n' +
             '• `/donate 5` - Donate 5 USDC to the bot\n'
     )
 })
@@ -53,8 +53,18 @@ bot.onSlashCommand('time', async (handler, { channelId }) => {
 })
 
 // Simple message responses
-bot.onMessage(async (handler, { message, channelId, eventId, createdAt }) => {
+bot.onMessage(async (handler, event) => {
+    const { message, channelId, eventId, createdAt, isMentioned } = event
     const lowerMsg = message.toLowerCase()
+
+    // Respond when bot is mentioned
+    if (isMentioned) {
+        await handler.sendMessage(
+            channelId,
+            '👋 Hi! I help you send USDC tips on Base.\n\nType `/help` to see all available commands!'
+        )
+        return
+    }
 
     if (lowerMsg.includes('hello') || lowerMsg.includes('hi')) {
         await handler.sendMessage(channelId, 'Hello there! 👋 Type `/help` to see what I can do!')
@@ -90,7 +100,7 @@ bot.onSlashCommand('tip', async (handler, event) => {
     }
 
     if (mentions.length > 1) {
-        await handler.sendMessage(channelId, '❌ Please mention only ONE user. Use `/tip-split` for multiple users.')
+        await handler.sendMessage(channelId, '❌ Please mention only ONE user. Use `/tipsplit` for multiple users.')
         return
     }
 
@@ -166,13 +176,13 @@ bot.onSlashCommand('tip', async (handler, event) => {
     }
 })
 
-// /tip-split @user1 @user2 @user3 amount
-bot.onSlashCommand('tip-split', async (handler, event) => {
+// /tipsplit @user1 @user2 @user3 amount
+bot.onSlashCommand('tipsplit', async (handler, event) => {
     const { args, mentions, channelId, userId, eventId } = event
 
     // Validate mentions
     if (mentions.length < 2) {
-        await handler.sendMessage(channelId, '❌ Please mention at least 2 users.\n**Usage:** `/tip-split @user1 @user2 amount`')
+        await handler.sendMessage(channelId, '❌ Please mention at least 2 users.\n**Usage:** `/tipsplit @user1 @user2 amount`')
         return
     }
 
@@ -186,7 +196,7 @@ bot.onSlashCommand('tip-split', async (handler, event) => {
     // Parse amount
     const totalAmount = parseAmountFromArgs(args)
     if (totalAmount === null) {
-        await handler.sendMessage(channelId, '❌ Please provide a valid amount.\n**Usage:** `/tip-split @user1 @user2 amount`')
+        await handler.sendMessage(channelId, '❌ Please provide a valid amount.\n**Usage:** `/tipsplit @user1 @user2 amount`')
         return
     }
 
@@ -215,7 +225,7 @@ bot.onSlashCommand('tip-split', async (handler, event) => {
         }
 
         // Store pending tip
-        const requestId = `tip-split-${eventId}`
+        const requestId = `tipsplit-${eventId}`
         pendingTips.set(requestId, {
             recipients,
             totalAmount
@@ -376,7 +386,7 @@ bot.onInteractionResponse(async (handler, event) => {
             // Send success message
             if (form.requestId.startsWith('donate-')) {
                 await handler.sendMessage(event.channelId, `❤️ Thank you for your ${tipData.totalAmount} USDC donation! Your support means everything! 🙏`)
-            } else if (form.requestId.startsWith('tip-split-')) {
+            } else if (form.requestId.startsWith('tipsplit-')) {
                 const recipientList = tipData.recipients
                     .map(r => `<@${r.userId}>`)
                     .join(', ')
