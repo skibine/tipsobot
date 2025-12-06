@@ -385,6 +385,10 @@ bot.onInteractionResponse(async (handler, event) => {
                 const amountWei = parseUnits(recipient.amount.toString(), USDC_DECIMALS)
 
                 console.log('[onInteractionResponse] Sending tx for:', recipient.userId, 'amount:', recipient.amount, 'USDC')
+                console.log('[onInteractionResponse] Recipient wallet:', recipient.wallet)
+                console.log('[onInteractionResponse] Amount in wei:', amountWei.toString())
+                console.log('[onInteractionResponse] USDC contract:', USDC_ADDRESS)
+                console.log('[onInteractionResponse] Chain:', 'Base (8453)')
 
                 // Encode USDC transfer
                 const data = encodeFunctionData({
@@ -393,12 +397,15 @@ bot.onInteractionResponse(async (handler, event) => {
                     args: [recipient.wallet, amountWei]
                 })
 
+                console.log('[onInteractionResponse] Encoded data:', data)
+
                 // Send transaction request to user
                 await handler.sendInteractionRequest(event.channelId, {
                     case: 'transaction',
                     value: {
                         id: `tx-${form.requestId}-${recipient.userId}`,
                         title: `Send ${recipient.amount} USDC`,
+                        description: `Transfer ${recipient.amount} USDC on Base\n\nTo: ${recipient.wallet.slice(0, 6)}...${recipient.wallet.slice(-4)}\n\n⚠️ Make sure you have:\n• ${recipient.amount} USDC on Base\n• ETH on Base for gas`,
                         content: {
                             case: 'evm',
                             value: {
