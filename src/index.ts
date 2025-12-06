@@ -92,13 +92,17 @@ bot.onReaction(async (handler, { reaction, channelId }) => {
 bot.onSlashCommand('tip', async (handler, event) => {
     const { args, mentions, channelId, userId, eventId } = event
 
+    console.log('[/tip] Received:', { args, mentions: mentions.length, userId })
+
     // Validate mentions
     if (mentions.length === 0) {
+        console.log('[/tip] No mentions found')
         await handler.sendMessage(channelId, '❌ Please mention a user to tip.\n**Usage:** `/tip @username amount`')
         return
     }
 
     if (mentions.length > 1) {
+        console.log('[/tip] Too many mentions:', mentions.length)
         await handler.sendMessage(channelId, '❌ Please mention only ONE user. Use `/tipsplit` for multiple users.')
         return
     }
@@ -107,12 +111,15 @@ bot.onSlashCommand('tip', async (handler, event) => {
 
     // Check if user is trying to tip themselves
     if (recipient.userId === userId) {
+        console.log('[/tip] Self-tip attempt')
         await handler.sendMessage(channelId, '❌ You cannot tip yourself! 😅')
         return
     }
 
     // Parse amount
     const amount = parseAmountFromArgs(args)
+    console.log('[/tip] Parsed amount:', amount, 'from args:', args)
+
     if (amount === null) {
         await handler.sendMessage(channelId, '❌ Please provide a valid amount.\n**Usage:** `/tip @username amount`')
         return
@@ -125,7 +132,10 @@ bot.onSlashCommand('tip', async (handler, event) => {
 
     try {
         // Get recipient's wallet
+        console.log('[/tip] Getting wallet for:', recipient.userId)
         const recipientWallet = await getSmartAccountFromUserId(bot, { userId: recipient.userId })
+        console.log('[/tip] Wallet found:', recipientWallet)
+
         if (!recipientWallet) {
             await handler.sendMessage(channelId, '❌ Unable to find wallet for the mentioned user.')
             return
@@ -142,6 +152,8 @@ bot.onSlashCommand('tip', async (handler, event) => {
             }],
             totalAmount: amount
         })
+
+        console.log('[/tip] Sending confirmation dialog')
 
         // Send confirmation dialog
         await handler.sendInteractionRequest(channelId, {
@@ -170,7 +182,7 @@ bot.onSlashCommand('tip', async (handler, event) => {
         }, hexToBytes(userId as `0x${string}`))
 
     } catch (error) {
-        console.error('Error in /tip:', error)
+        console.error('[/tip] Error:', error)
         await handler.sendMessage(channelId, '❌ Failed to process tip request. Please try again.')
     }
 })
@@ -179,8 +191,11 @@ bot.onSlashCommand('tip', async (handler, event) => {
 bot.onSlashCommand('tipsplit', async (handler, event) => {
     const { args, mentions, channelId, userId, eventId } = event
 
+    console.log('[/tipsplit] Received:', { args, mentions: mentions.length, userId })
+
     // Validate mentions
     if (mentions.length < 2) {
+        console.log('[/tipsplit] Not enough mentions:', mentions.length)
         await handler.sendMessage(channelId, '❌ Please mention at least 2 users.\n**Usage:** `/tipsplit @user1 @user2 amount`')
         return
     }
@@ -194,6 +209,8 @@ bot.onSlashCommand('tipsplit', async (handler, event) => {
 
     // Parse amount
     const totalAmount = parseAmountFromArgs(args)
+    console.log('[/tipsplit] Parsed amount:', totalAmount, 'from args:', args)
+
     if (totalAmount === null) {
         await handler.sendMessage(channelId, '❌ Please provide a valid amount.\n**Usage:** `/tipsplit @user1 @user2 amount`')
         return
@@ -271,8 +288,12 @@ bot.onSlashCommand('tipsplit', async (handler, event) => {
 bot.onSlashCommand('donate', async (handler, event) => {
     const { args, channelId, userId, eventId } = event
 
+    console.log('[/donate] Received:', { args, userId })
+
     // Parse amount
     const amount = parseAmountFromArgs(args)
+    console.log('[/donate] Parsed amount:', amount, 'from args:', args)
+
     if (amount === null) {
         await handler.sendMessage(channelId, '❌ Please provide a valid amount.\n**Usage:** `/donate amount`')
         return
@@ -330,10 +351,14 @@ bot.onSlashCommand('donate', async (handler, event) => {
 
 // Handle interaction responses (button clicks)
 bot.onInteractionResponse(async (handler, event) => {
+    console.log('[onInteractionResponse] Received:', event.response.payload.content?.case)
+
     if (event.response.payload.content?.case !== 'form') return
 
     const form = event.response.payload.content.value
     const tipData = pendingTips.get(form.requestId)
+
+    console.log('[onInteractionResponse] Request ID:', form.requestId, 'Found data:', !!tipData)
 
     if (!tipData) return
 
@@ -342,6 +367,8 @@ bot.onInteractionResponse(async (handler, event) => {
 
     // Check which button was clicked
     const clickedButton = form.components.find(c => c.component.case === 'button')
+    console.log('[onInteractionResponse] Button clicked:', clickedButton?.id)
+
     if (!clickedButton) return
 
     if (clickedButton.id === 'cancel') {
@@ -351,9 +378,13 @@ bot.onInteractionResponse(async (handler, event) => {
 
     if (clickedButton.id === 'confirm') {
         try {
+            console.log('[onInteractionResponse] Confirming, recipients:', tipData.recipients.length)
+
             // Send transaction request for each recipient
             for (const recipient of tipData.recipients) {
                 const amountWei = parseUnits(recipient.amount.toString(), USDC_DECIMALS)
+
+                console.log('[onInteractionResponse] Sending tx for:', recipient.userId, 'amount:', recipient.amount, 'USDC')
 
                 // Encode USDC transfer
                 const data = encodeFunctionData({
@@ -380,6 +411,8 @@ bot.onInteractionResponse(async (handler, event) => {
                         }
                     }
                 }, hexToBytes(event.userId as `0x${string}`))
+
+                console.log('[onInteractionResponse] Transaction request sent for:', recipient.userId)
             }
 
             // Send success message
