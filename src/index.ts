@@ -1,27 +1,48 @@
 import { makeTownsBot, getSmartAccountFromUserId } from '@towns-protocol/bot'
-import { encodeFunctionData, parseUnits, hexToBytes, erc20Abi } from 'viem'
+import { encodeFunctionData, parseUnits, hexToBytes, erc20Abi, formatUnits } from 'viem'
 import commands from './commands'
 
-const pendingTips = new Map<string, { recipients: Array<{ userId: string, wallet: `0x${string}`, amount: number }>, totalAmount: number }>()
+// USDC on Base
+const USDC_ADDRESS = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913' as const
+const USDC_DECIMALS = 6
+
+// Store pending tip confirmations
+const pendingTips = new Map<string, {
+    recipients: Array<{ userId: string, displayName: string, wallet: `0x${string}`, amount: number }>,
+    totalAmount: number
+}>()
 
 const bot = await makeTownsBot(process.env.APP_PRIVATE_DATA!, process.env.JWT_SECRET!, {
     commands,
 })
 
+// Helper function to parse amount from args
+function parseAmountFromArgs(args: string[]): number | null {
+    // Find the first arg that looks like a number
+    for (const arg of args) {
+        const cleaned = arg.replace(/,/g, '') // Remove commas
+        const num = parseFloat(cleaned)
+        if (!isNaN(num) && num > 0) {
+            return num
+        }
+    }
+    return null
+}
+
 bot.onSlashCommand('help', async (handler, { channelId }) => {
     await handler.sendMessage(
         channelId,
-        '**Available Commands:**\n\n' +
-            '• `/help` - Show this help message\n' +
-            '• `/time` - Get the current time\n' +
-            '• `/tip @username amount` - Tip a user with USDC\n' +
-            '• `/tip-split @user1 @user2 amount` - Split tip between users\n\n' +
-            '**Message Triggers:**\n\n' +
-            "• Mention me - I'll respond\n" +
-            "• React with 👋 - I'll wave back" +
-            '• Say "hello" - I\'ll greet you back\n' +
-            '• Say "ping" - I\'ll show latency\n' +
-            '• Say "react" - I\'ll add a reaction\n',
+        '**TipsoBot - Send USDC tips on Base** 💸\n\n' +
+            '**Commands:**\n' +
+            '• `/tip @username amount` - Send USDC to a user\n' +
+            '• `/tip-split @user1 @user2 amount` - Split amount equally\n' +
+            '• `/donate amount` - Support the bot with USDC\n' +
+            '• `/help` - Show this message\n' +
+            '• `/time` - Current server time\n\n' +
+            '**Examples:**\n' +
+            '• `/tip @alice 10` - Send 10 USDC to Alice\n' +
+            '• `/tip-split @bob @charlie 20` - Send 10 USDC each\n' +
+            '• `/donate 5` - Donate 5 USDC to the bot\n'
     )
 })
 
@@ -30,17 +51,22 @@ bot.onSlashCommand('time', async (handler, { channelId }) => {
     await handler.sendMessage(channelId, `Current time: ${currentTime} ⏰`)
 })
 
+// Simple message responses
 bot.onMessage(async (handler, { message, channelId, eventId, createdAt }) => {
-    if (message.includes('hello')) {
-        await handler.sendMessage(channelId, 'Hello there! 👋')
+    const lowerMsg = message.toLowerCase()
+
+    if (lowerMsg.includes('hello') || lowerMsg.includes('hi')) {
+        await handler.sendMessage(channelId, 'Hello there! 👋 Type `/help` to see what I can do!')
         return
     }
-    if (message.includes('ping')) {
-        const now = new Date()
-        await handler.sendMessage(channelId, `Pong! 🏓 ${now.getTime() - createdAt.getTime()}ms`)
+
+    if (lowerMsg.includes('ping')) {
+        const latency = new Date().getTime() - createdAt.getTime()
+        await handler.sendMessage(channelId, `Pong! 🏓 Latency: ${latency}ms`)
         return
     }
-    if (message.includes('react')) {
+
+    if (lowerMsg.includes('react')) {
         await handler.sendReaction(channelId, eventId, '👍')
         return
     }
@@ -52,135 +78,281 @@ bot.onReaction(async (handler, { reaction, channelId }) => {
     }
 })
 
+// /tip @username amount
 bot.onSlashCommand('tip', async (handler, event) => {
     const { args, mentions, channelId, userId, eventId } = event
 
-    if (mentions.length !== 1) {
-        await handler.sendMessage(channelId, 'Please mention exactly one user to tip. Usage: /tip @username amount')
+    // Validate mentions
+    if (mentions.length === 0) {
+        await handler.sendMessage(channelId, '❌ Please mention a user to tip.\n**Usage:** `/tip @username amount`')
+        return
+    }
+
+    if (mentions.length > 1) {
+        await handler.sendMessage(channelId, '❌ Please mention only ONE user. Use `/tip-split` for multiple users.')
         return
     }
 
     const recipient = mentions[0]
-    const amountStr = args[0]
 
-    if (!amountStr) {
-        await handler.sendMessage(channelId, 'Please provide an amount to tip. Usage: /tip @username amount')
+    // Check if user is trying to tip themselves
+    if (recipient.userId === userId) {
+        await handler.sendMessage(channelId, '❌ You cannot tip yourself! 😅')
         return
     }
 
-    const amount = parseFloat(amountStr)
-    if (isNaN(amount) || amount <= 0) {
-        await handler.sendMessage(channelId, 'Please provide a valid positive amount.')
+    // Parse amount
+    const amount = parseAmountFromArgs(args)
+    if (amount === null) {
+        await handler.sendMessage(channelId, '❌ Please provide a valid amount.\n**Usage:** `/tip @username amount`')
+        return
+    }
+
+    if (amount <= 0) {
+        await handler.sendMessage(channelId, '❌ Amount must be greater than 0.')
         return
     }
 
     try {
-        // @ts-ignore
+        // Get recipient's wallet
         const recipientWallet = await getSmartAccountFromUserId(bot, { userId: recipient.userId })
         if (!recipientWallet) {
-            await handler.sendMessage(channelId, 'Unable to find wallet for the mentioned user.')
+            await handler.sendMessage(channelId, '❌ Unable to find wallet for the mentioned user.')
             return
         }
 
+        // Store pending tip
         const requestId = `tip-${eventId}`
         pendingTips.set(requestId, {
-            recipients: [{ userId: recipient.userId, wallet: recipientWallet as `0x${string}`, amount }],
+            recipients: [{
+                userId: recipient.userId,
+                displayName: recipient.displayName,
+                wallet: recipientWallet as `0x${string}`,
+                amount
+            }],
             totalAmount: amount
         })
 
+        // Send confirmation dialog
         await handler.sendInteractionRequest(channelId, {
             case: 'form',
             value: {
                 id: requestId,
-                title: `Confirm Tip: ${amount} USDC to ${recipient.displayName}`,
+                title: `💸 Confirm Tip`,
+                description: `Send ${amount} USDC to <@${recipient.userId}>?\n\nRecipient wallet: ${recipientWallet.slice(0, 6)}...${recipientWallet.slice(-4)}`,
                 components: [
-                    { id: 'confirm', component: { case: 'button', value: { label: 'Confirm' } } },
-                    { id: 'cancel', component: { case: 'button', value: { label: 'Cancel' } } }
+                    {
+                        id: 'confirm',
+                        component: {
+                            case: 'button',
+                            value: { label: '✅ Confirm' }
+                        }
+                    },
+                    {
+                        id: 'cancel',
+                        component: {
+                            case: 'button',
+                            value: { label: '❌ Cancel' }
+                        }
+                    }
                 ]
             }
         }, hexToBytes(userId as `0x${string}`))
+
     } catch (error) {
-        await handler.sendMessage(channelId, 'Failed to get recipient wallet. Please try again.')
+        console.error('Error in /tip:', error)
+        await handler.sendMessage(channelId, '❌ Failed to process tip request. Please try again.')
     }
 })
 
+// /tip-split @user1 @user2 @user3 amount
 bot.onSlashCommand('tip-split', async (handler, event) => {
     const { args, mentions, channelId, userId, eventId } = event
 
+    // Validate mentions
     if (mentions.length < 2) {
-        await handler.sendMessage(channelId, 'Please mention at least two users to split the tip. Usage: /tip-split @user1 @user2 amount')
+        await handler.sendMessage(channelId, '❌ Please mention at least 2 users.\n**Usage:** `/tip-split @user1 @user2 amount`')
         return
     }
 
-    const amountStr = args[args.length - 1] // Last arg is amount
-    if (!amountStr) {
-        await handler.sendMessage(channelId, 'Please provide an amount to tip. Usage: /tip-split @user1 @user2 amount')
+    // Check if user is trying to include themselves
+    const selfTip = mentions.find(m => m.userId === userId)
+    if (selfTip) {
+        await handler.sendMessage(channelId, '❌ You cannot include yourself in a tip split! 😅')
         return
     }
 
-    const totalAmount = parseFloat(amountStr)
-    if (isNaN(totalAmount) || totalAmount <= 0) {
-        await handler.sendMessage(channelId, 'Please provide a valid positive amount.')
+    // Parse amount
+    const totalAmount = parseAmountFromArgs(args)
+    if (totalAmount === null) {
+        await handler.sendMessage(channelId, '❌ Please provide a valid amount.\n**Usage:** `/tip-split @user1 @user2 amount`')
         return
     }
 
-    const splitAmount = totalAmount / mentions.length
+    if (totalAmount <= 0) {
+        await handler.sendMessage(channelId, '❌ Amount must be greater than 0.')
+        return
+    }
+
+    const splitAmount = parseFloat((totalAmount / mentions.length).toFixed(6))
 
     try {
+        // Get wallets for all recipients
         const recipients = []
         for (const mention of mentions) {
-            // @ts-ignore
             const wallet = await getSmartAccountFromUserId(bot, { userId: mention.userId })
             if (!wallet) {
-                await handler.sendMessage(channelId, `Unable to find wallet for ${mention.displayName}.`)
+                await handler.sendMessage(channelId, `❌ Unable to find wallet for <@${mention.userId}> (${mention.displayName})`)
                 return
             }
-            recipients.push({ userId: mention.userId, wallet: wallet as `0x${string}`, amount: splitAmount })
+            recipients.push({
+                userId: mention.userId,
+                displayName: mention.displayName,
+                wallet: wallet as `0x${string}`,
+                amount: splitAmount
+            })
         }
 
+        // Store pending tip
         const requestId = `tip-split-${eventId}`
         pendingTips.set(requestId, {
             recipients,
             totalAmount
         })
 
-        const breakdown = recipients.map(r => `${r.amount} USDC to ${mentions.find(m => m.userId === r.userId)?.displayName}`).join('\n')
+        // Build breakdown
+        const breakdown = recipients
+            .map(r => `  • ${r.amount} USDC → <@${r.userId}>`)
+            .join('\n')
+
+        // Send confirmation dialog
         await handler.sendInteractionRequest(channelId, {
             case: 'form',
             value: {
                 id: requestId,
-                title: `Confirm Split Tip: ${totalAmount} USDC`,
+                title: `💸 Confirm Split Tip`,
+                description: `Split ${totalAmount} USDC between ${mentions.length} users (${splitAmount} each):\n\n${breakdown}`,
                 components: [
-                    { id: 'confirm', component: { case: 'button', value: { label: 'Confirm' } } },
-                    { id: 'cancel', component: { case: 'button', value: { label: 'Cancel' } } }
+                    {
+                        id: 'confirm',
+                        component: {
+                            case: 'button',
+                            value: { label: '✅ Confirm' }
+                        }
+                    },
+                    {
+                        id: 'cancel',
+                        component: {
+                            case: 'button',
+                            value: { label: '❌ Cancel' }
+                        }
+                    }
                 ]
             }
         }, hexToBytes(userId as `0x${string}`))
+
     } catch (error) {
-        await handler.sendMessage(channelId, 'Failed to get recipient wallets. Please try again.')
+        console.error('Error in /tip-split:', error)
+        await handler.sendMessage(channelId, '❌ Failed to process split tip request. Please try again.')
     }
 })
 
+// /donate amount
+bot.onSlashCommand('donate', async (handler, event) => {
+    const { args, channelId, userId, eventId } = event
+
+    // Parse amount
+    const amount = parseAmountFromArgs(args)
+    if (amount === null) {
+        await handler.sendMessage(channelId, '❌ Please provide a valid amount.\n**Usage:** `/donate amount`')
+        return
+    }
+
+    if (amount <= 0) {
+        await handler.sendMessage(channelId, '❌ Amount must be greater than 0.')
+        return
+    }
+
+    try {
+        // Store pending donation
+        const requestId = `donate-${eventId}`
+        pendingTips.set(requestId, {
+            recipients: [{
+                userId: bot.botId,
+                displayName: 'TipsoBot',
+                wallet: bot.appAddress as `0x${string}`,
+                amount
+            }],
+            totalAmount: amount
+        })
+
+        // Send confirmation dialog
+        await handler.sendInteractionRequest(channelId, {
+            case: 'form',
+            value: {
+                id: requestId,
+                title: `❤️ Confirm Donation`,
+                description: `Donate ${amount} USDC to support TipsoBot?\n\nYour support helps keep this bot running! 🙏`,
+                components: [
+                    {
+                        id: 'confirm',
+                        component: {
+                            case: 'button',
+                            value: { label: '✅ Confirm Donation' }
+                        }
+                    },
+                    {
+                        id: 'cancel',
+                        component: {
+                            case: 'button',
+                            value: { label: '❌ Cancel' }
+                        }
+                    }
+                ]
+            }
+        }, hexToBytes(userId as `0x${string}`))
+
+    } catch (error) {
+        console.error('Error in /donate:', error)
+        await handler.sendMessage(channelId, '❌ Failed to process donation request. Please try again.')
+    }
+})
+
+// Handle interaction responses (button clicks)
 bot.onInteractionResponse(async (handler, event) => {
-    if (event.response.payload.content?.case === 'form') {
-        const form = event.response.payload.content.value
-        const tipData = pendingTips.get(form.requestId)
-        if (!tipData) return
+    if (event.response.payload.content?.case !== 'form') return
 
-        pendingTips.delete(form.requestId)
+    const form = event.response.payload.content.value
+    const tipData = pendingTips.get(form.requestId)
 
-        const action = form.components.find(c => c.component.case === 'button')?.id
-        if (action === 'confirm') {
-            // Send transaction for each recipient
-            const usdcAddress = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913' as const
+    if (!tipData) return
+
+    // Clean up stored data
+    pendingTips.delete(form.requestId)
+
+    // Check which button was clicked
+    const clickedButton = form.components.find(c => c.component.case === 'button')
+    if (!clickedButton) return
+
+    if (clickedButton.id === 'cancel') {
+        await handler.sendMessage(event.channelId, '❌ Cancelled.')
+        return
+    }
+
+    if (clickedButton.id === 'confirm') {
+        try {
+            // Send transaction request for each recipient
             for (const recipient of tipData.recipients) {
-                const amountWei = parseUnits(recipient.amount.toString(), 6)
+                const amountWei = parseUnits(recipient.amount.toString(), USDC_DECIMALS)
+
+                // Encode USDC transfer
                 const data = encodeFunctionData({
                     abi: erc20Abi,
                     functionName: 'transfer',
-                    args: [recipient.wallet as `0x${string}`, amountWei]
+                    args: [recipient.wallet, amountWei]
                 })
 
+                // Send transaction request to user
                 await handler.sendInteractionRequest(event.channelId, {
                     case: 'transaction',
                     value: {
@@ -189,8 +361,8 @@ bot.onInteractionResponse(async (handler, event) => {
                         content: {
                             case: 'evm',
                             value: {
-                                chainId: '8453',
-                                to: usdcAddress,
+                                chainId: '8453', // Base
+                                to: USDC_ADDRESS,
                                 value: '0',
                                 data,
                                 signerWallet: undefined
@@ -199,10 +371,49 @@ bot.onInteractionResponse(async (handler, event) => {
                     }
                 }, hexToBytes(event.userId as `0x${string}`))
             }
-            await handler.sendMessage(event.channelId, `Tip request sent for ${tipData.totalAmount} USDC! 💸`)
-        } else if (action === 'cancel') {
-            await handler.sendMessage(event.channelId, 'Tip cancelled.')
+
+            // Send success message
+            if (form.requestId.startsWith('donate-')) {
+                await handler.sendMessage(event.channelId, `❤️ Thank you for your ${tipData.totalAmount} USDC donation! Your support means everything! 🙏`)
+            } else if (form.requestId.startsWith('tip-split-')) {
+                const recipientList = tipData.recipients
+                    .map(r => `<@${r.userId}>`)
+                    .join(', ')
+                await handler.sendMessage(
+                    event.channelId,
+                    `💸 Sending ${tipData.totalAmount} USDC split between ${recipientList}!`,
+                    { mentions: tipData.recipients.map(r => ({ userId: r.userId, displayName: r.displayName })) }
+                )
+            } else {
+                const recipient = tipData.recipients[0]
+                await handler.sendMessage(
+                    event.channelId,
+                    `💸 Sending ${tipData.totalAmount} USDC to <@${recipient.userId}>!`,
+                    { mentions: [{ userId: recipient.userId, displayName: recipient.displayName }] }
+                )
+            }
+
+        } catch (error) {
+            console.error('Error sending transaction:', error)
+            await handler.sendMessage(event.channelId, '❌ Failed to send transaction request. Please try again.')
         }
+    }
+})
+
+// Handle direct tips to the bot (like using Towns native tip feature)
+bot.onTip(async (handler, event) => {
+    const { senderAddress, receiverAddress, amount, currency, channelId } = event
+
+    // Check if tip is for the bot
+    if (receiverAddress.toLowerCase() === bot.appAddress.toLowerCase()) {
+        const formattedAmount = currency.toLowerCase() === USDC_ADDRESS.toLowerCase()
+            ? formatUnits(amount, USDC_DECIMALS)
+            : formatUnits(amount, 18) // ETH or other tokens
+
+        await handler.sendMessage(
+            channelId,
+            `❤️ Thank you for the tip! Received ${formattedAmount} ${currency.toLowerCase() === USDC_ADDRESS.toLowerCase() ? 'USDC' : 'tokens'}! 🙏`
+        )
     }
 })
 
@@ -210,10 +421,5 @@ const app = bot.start()
 
 // Health check route
 app.get('/', (c) => c.text('TipsoBot is running! 💸'))
-
-// Webhook route for Towns
-app.post('/webhook', async (c) => {
-  return app.fetch(c.req)  // пробросить запрос в bot.start()
-})
 
 export default app

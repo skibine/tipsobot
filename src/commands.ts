@@ -19,6 +19,10 @@ const commands = [
         name: 'tip-split',
         description: 'Split tip between multiple users',
     },
+    {
+        name: 'donate',
+        description: 'Donate USDC to support the bot',
+    },
 ] as const satisfies BotCommand[]
 
 export default commands
