@@ -1,6 +1,5 @@
 import { makeTownsBot, getSmartAccountFromUserId } from '@towns-protocol/bot'
 import { encodeFunctionData, parseUnits, hexToBytes, erc20Abi, formatUnits } from 'viem'
-import { Hono } from 'hono'
 import commands from './commands'
 
 // USDC on Base
@@ -428,27 +427,19 @@ bot.onTip(async (handler, event) => {
     }
 })
 
-// bot.start() returns a Hono app with webhook handlers on POST /
-const botApp = bot.start()
+const app = bot.start()
 
-// Create wrapper app
-const app = new Hono()
-
-// Health check
+// Health check route
 app.get('/', (c) => c.text('TipsoBot is running! 💸'))
 
-// Webhook endpoint - proxy to botApp
+// Webhook route for Towns
 app.post('/webhook', async (c) => {
-    // botApp expects POST on /, so we create a new request to /
-    const newReq = new Request(
-        c.req.url.replace('/webhook', '/'),
-        {
-            method: 'POST',
-            headers: c.req.raw.headers,
-            body: await c.req.raw.clone().arrayBuffer(),
-        }
-    )
-    return botApp.fetch(newReq)
+  // Get the webhook body
+  const body = await c.req.json()
+  console.log('Webhook received:', body)
+
+  // Return 200 so Towns knows we received it
+  return c.json({ ok: true }, 200)
 })
 
 export default app
