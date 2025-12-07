@@ -158,12 +158,10 @@ export async function getTopTippers(limit: number = 10) {
 
 export async function getTopDonators(limit: number = 10) {
     const result = await pool.query(
-        `SELECT user_id, display_name,
-                (SELECT SUM(total_sent) FROM user_stats WHERE donations > 0) as amount,
-                donations as count
+        `SELECT user_id, display_name, total_sent as amount, donations as count
          FROM user_stats
          WHERE donations > 0
-         ORDER BY donations DESC, total_sent DESC
+         ORDER BY total_sent DESC, donations DESC
          LIMIT $1`,
         [limit]
     )
@@ -217,8 +215,7 @@ export async function addContribution(data: {
              SET total_collected = total_collected + $1,
                  is_completed = (total_collected + $1) >= amount,
                  completed_at = CASE WHEN (total_collected + $1) >= amount AND completed_at IS NULL
-                                     THEN NOW() ELSE completed_at END,
-                 updated_at = NOW()
+                                     THEN NOW() ELSE completed_at END
              WHERE id = $2
              RETURNING *`,
             [data.amount, data.requestId]
