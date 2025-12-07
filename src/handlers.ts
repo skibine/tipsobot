@@ -4,6 +4,7 @@ import { hexToBytes, parseEther, formatEther } from 'viem'
 import {
     getPendingTransaction,
     deletePendingTransaction,
+    updatePendingTransaction,
     updateGlobalStats,
     upsertUserStats,
     addContribution,
@@ -166,19 +167,25 @@ export async function handleTransactionResponse(
 
     try {
         // Extract the original request ID from transaction ID
-        // Format: tx-{originalRequestId}-{recipientUserId} or tx-{originalRequestId}
+        // Format: tx-{type}-{eventId} or tx-{type}-{eventId}-{recipientUserId} (for tipsplit)
         const parts = txId.split('-')
         let originalRequestId: string
+        let recipientUserId: string | null = null
 
         if (parts[0] === 'tx' && parts.length >= 3) {
-            // Format: tx-contrib-eventId or tx-donate-eventId or tx-tip-eventId
+            // Format: tx-tip-eventId, tx-donate-eventId, tx-contrib-eventId
             originalRequestId = `${parts[1]}-${parts[2]}`
+
+            // For tipsplit: tx-tipsplit-eventId-recipientUserId
+            if (parts.length === 4 && parts[1] === 'tipsplit') {
+                recipientUserId = parts[3]
+            }
         } else {
             console.error('[Transaction Response] Invalid transaction ID format:', txId)
             return
         }
 
-        console.log('[Transaction Response] Original request ID:', originalRequestId)
+        console.log('[Transaction Response] Original request ID:', originalRequestId, 'Recipient:', recipientUserId || 'N/A')
 
         // Handle contribution (stored in database)
         if (originalRequestId.startsWith('contrib-')) {
@@ -236,8 +243,10 @@ export async function handleTransactionResponse(
             const paymentRequest = await getPaymentRequest(data.requestId)
             if (paymentRequest) {
                 const contributions = await getContributions(data.requestId)
-                const progress = Math.min(100, (parseFloat(paymentRequest.total_collected) / parseFloat(paymentRequest.amount)) * 100)
-                const progressBar = '▰'.repeat(Math.floor(progress / 10)) + '▱'.repeat(10 - Math.floor(progress / 10))
+                const progress = (parseFloat(paymentRequest.total_collected) / parseFloat(paymentRequest.amount)) * 100
+                const progressBar = progress >= 100
+                    ? '▰'.repeat(10)
+                    : '▰'.repeat(Math.floor(progress / 10)) + '▱'.repeat(10 - Math.floor(progress / 10))
 
                 // Post update message
                 const updateMessage = progress >= 100
@@ -245,7 +254,7 @@ export async function handleTransactionResponse(
                         `**Goal:** $${parseFloat(paymentRequest.amount).toFixed(2)}\n` +
                         `**Description:** ${paymentRequest.description}\n` +
                         `**Collected:** $${parseFloat(paymentRequest.total_collected).toFixed(2)} / $${parseFloat(paymentRequest.amount).toFixed(2)}\n` +
-                        `**Progress:** ${progressBar} ${progress.toFixed(0)}%\n` +
+                        `**Progress:** ${progressBar} ${progress.toFixed(0)}%${progress > 100 ? ' 🚀 **Goal exceeded!**' : ''}\n` +
                         `**Contributors:** ${contributions.length}\n\n` +
                         `🎉 **Goal reached! Thank you to all contributors!** 🎉`
                     : `**💰 Payment Request Updated**\n\n` +
@@ -302,7 +311,12 @@ export async function handleTransactionResponse(
             await deletePendingTransaction(originalRequestId)
 
         } else if (originalRequestId.startsWith('tipsplit-')) {
-            // Tip split
+            // Tip split - need to wait for ALL transactions to complete
+            if (!recipientUserId) {
+                console.error('[Transaction Response] Missing recipient userId for tipsplit')
+                return
+            }
+
             const pendingTx = await getPendingTransaction(originalRequestId)
             if (!pendingTx) {
                 console.log('[Transaction Response] No pending tipsplit found (already processed or cancelled)')
@@ -311,41 +325,58 @@ export async function handleTransactionResponse(
 
             const data = pendingTx.data
 
-            // Update global stats
-            await updateGlobalStats({
-                tipsVolume: data.totalUsd,
-                tipsCount: 1
-            })
-
-            // Update user stats
-            await upsertUserStats(pendingTx.userId, pendingTx.userId, {
-                sentAmount: data.totalUsd,
-                tipsSent: 1
-            })
-
-            // Update each recipient's stats
-            for (const recipient of data.recipients) {
-                await upsertUserStats(recipient.userId, recipient.displayName, {
-                    receivedAmount: recipient.usdAmount,
-                    tipsReceived: 1
-                })
+            // Add this recipient to completed list
+            if (!data.completedRecipients) {
+                data.completedRecipients = []
             }
 
-            // Send success message
-            const recipientList = data.recipients.map((r: any) => `<@${r.userId}>`).join(', ')
-            const mentions = [
-                { userId: pendingTx.userId, displayName: pendingTx.userId },
-                ...data.recipients.map((r: any) => ({ userId: r.userId, displayName: r.displayName }))
-            ]
+            if (!data.completedRecipients.includes(recipientUserId)) {
+                data.completedRecipients.push(recipientUserId)
+                await updatePendingTransaction(originalRequestId, data)
+            }
 
-            await handler.sendMessage(
-                data.channelId,
-                `💸 <@${pendingTx.userId}> sent ~$${data.totalUsd.toFixed(2)} (${data.totalEth.toFixed(6)} ETH) split between ${recipientList}!`,
-                { mentions }
-            )
+            console.log(`[Transaction Response] Tipsplit progress: ${data.completedRecipients.length}/${data.recipients.length}`)
 
-            // Clean up
-            await deletePendingTransaction(originalRequestId)
+            // Check if all transactions are complete
+            if (data.completedRecipients.length === data.recipients.length) {
+                console.log('[Transaction Response] All tipsplit transactions completed!')
+
+                // Update global stats
+                await updateGlobalStats({
+                    tipsVolume: data.totalUsd,
+                    tipsCount: 1
+                })
+
+                // Update user stats
+                await upsertUserStats(pendingTx.userId, pendingTx.userId, {
+                    sentAmount: data.totalUsd,
+                    tipsSent: 1
+                })
+
+                // Update each recipient's stats
+                for (const recipient of data.recipients) {
+                    await upsertUserStats(recipient.userId, recipient.displayName, {
+                        receivedAmount: recipient.usdAmount,
+                        tipsReceived: 1
+                    })
+                }
+
+                // Send success message
+                const recipientList = data.recipients.map((r: any) => `<@${r.userId}>`).join(', ')
+                const mentions = [
+                    { userId: pendingTx.userId, displayName: pendingTx.userId },
+                    ...data.recipients.map((r: any) => ({ userId: r.userId, displayName: r.displayName }))
+                ]
+
+                await handler.sendMessage(
+                    data.channelId,
+                    `💸 <@${pendingTx.userId}> sent ~$${data.totalUsd.toFixed(2)} (${data.totalEth.toFixed(6)} ETH) split between ${recipientList}!`,
+                    { mentions }
+                )
+
+                // Clean up
+                await deletePendingTransaction(originalRequestId)
+            }
 
         } else if (originalRequestId.startsWith('donate-')) {
             // Donation
