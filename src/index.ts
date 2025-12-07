@@ -434,7 +434,8 @@ bot.onSlashCommand('tipsplit', async (handler, event) => {
             })),
             totalUsd,
             totalEth,
-            channelId
+            channelId,
+            completedRecipients: [] // Track which recipients have completed their transaction
         })
 
         // Build breakdown
@@ -754,6 +755,17 @@ bot.onSlashCommand('contribute', async (handler, event) => {
         const paymentRequest = await getPaymentRequest(requestId)
         if (!paymentRequest) {
             await handler.sendMessage(channelId, '❌ Payment request not found. Please check the request ID.')
+            return
+        }
+
+        // Check if request is already completed
+        if (paymentRequest.is_completed) {
+            await handler.sendMessage(
+                channelId,
+                `❌ This payment request is already completed! 🎉\n\n` +
+                `<@${paymentRequest.creator_id}> is happy! Goal was reached. 😊`,
+                { mentions: [{ userId: paymentRequest.creator_id, displayName: paymentRequest.creator_name }] }
+            )
             return
         }
 

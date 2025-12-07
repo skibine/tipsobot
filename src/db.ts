@@ -306,6 +306,13 @@ export async function getPendingTransaction(id: string) {
     }
 }
 
+export async function updatePendingTransaction(id: string, data: any) {
+    await pool.query(
+        'UPDATE pending_transactions SET data = $1 WHERE id = $2',
+        [JSON.stringify(data), id]
+    )
+}
+
 export async function deletePendingTransaction(id: string) {
     await pool.query('DELETE FROM pending_transactions WHERE id = $1', [id])
 }
