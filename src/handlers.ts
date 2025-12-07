@@ -15,7 +15,6 @@ import {
 export async function handleFormResponse(
     handler: BotHandler,
     event: any,
-    pendingTips: Map<string, any>,
     getEthPrice: () => Promise<number>
 ) {
     const form = event.response.payload.content.value
@@ -27,30 +26,30 @@ export async function handleFormResponse(
     if (!clickedButton) return
 
     if (clickedButton.id === 'cancel') {
-        // Clean up pending transaction if it's a contribute
-        if (form.requestId.startsWith('contrib-')) {
-            await deletePendingTransaction(form.requestId)
-        }
+        // Clean up pending transaction from database
+        await deletePendingTransaction(form.requestId)
         await handler.sendMessage(event.channelId, '❌ Cancelled.')
         return
     }
 
     if (clickedButton.id === 'confirm') {
         try {
-            // Handle contribute (from database)
-            if (form.requestId.startsWith('contrib-')) {
-                const pendingTx = await getPendingTransaction(form.requestId)
-                if (!pendingTx) {
-                    console.error('[Form Response] No pending transaction found for:', form.requestId)
-                    return
-                }
+            // Get pending transaction from database
+            const pendingTx = await getPendingTransaction(form.requestId)
+            if (!pendingTx) {
+                console.error('[Form Response] No pending transaction found for:', form.requestId)
+                return
+            }
 
-                const data = pendingTx.data
+            const data = pendingTx.data
+            const ethPrice = await getEthPrice()
+
+            // Handle different transaction types
+            if (form.requestId.startsWith('contrib-')) {
+                // Contribution
                 const amountWei = parseEther(data.ethAmount.toString())
-                const ethPrice = await getEthPrice()
                 const usdValue = data.contributionUsd.toFixed(2)
 
-                // Send transaction request
                 await handler.sendInteractionRequest(event.channelId, {
                     case: 'transaction',
                     value: {
@@ -70,37 +69,72 @@ export async function handleFormResponse(
                     }
                 }, hexToBytes(event.userId as `0x${string}`))
 
-                console.log('[Form Response] Transaction request sent for contribution')
-                return
-            }
-
-            // Handle other types (tip, tipsplit, donate) - use old Map-based system for now
-            const tipData = pendingTips.get(form.requestId)
-            if (!tipData) {
-                console.error('[Form Response] No pending tip data found for:', form.requestId)
-                return
-            }
-
-            // Clean up stored data
-            pendingTips.delete(form.requestId)
-
-            // Send transaction request for each recipient
-            for (const recipient of tipData.recipients) {
-                const amountWei = parseEther(recipient.amount.toString())
-                const ethPrice = await getEthPrice()
-                const usdValue = (recipient.amount * ethPrice).toFixed(2)
+            } else if (form.requestId.startsWith('tip-')) {
+                // Regular tip
+                const amountWei = parseEther(data.ethAmount.toString())
+                const usdValue = data.usdAmount.toFixed(2)
 
                 await handler.sendInteractionRequest(event.channelId, {
                     case: 'transaction',
                     value: {
-                        id: `tx-${form.requestId}-${recipient.userId}`,
+                        id: `tx-${form.requestId}`,
                         title: `Send ~$${usdValue}`,
-                        description: `Transfer ~$${usdValue} (${recipient.amount.toFixed(6)} ETH) on Base\n\nTo: ${recipient.wallet.slice(0, 6)}...${recipient.wallet.slice(-4)}\n\n⚠️ Make sure you have enough ETH for the transfer plus gas (~$0.01)`,
+                        description: `Transfer ~$${usdValue} (${data.ethAmount.toFixed(6)} ETH) on Base\n\nTo: ${data.recipientWallet.slice(0, 6)}...${data.recipientWallet.slice(-4)}\n\n⚠️ Make sure you have enough ETH for the transfer plus gas (~$0.01)`,
                         content: {
                             case: 'evm',
                             value: {
                                 chainId: '8453',
-                                to: recipient.wallet,
+                                to: data.recipientWallet,
+                                value: amountWei.toString(),
+                                data: '0x',
+                                signerWallet: undefined
+                            }
+                        }
+                    }
+                }, hexToBytes(event.userId as `0x${string}`))
+
+            } else if (form.requestId.startsWith('tipsplit-')) {
+                // Tip split - send multiple transactions
+                for (const recipient of data.recipients) {
+                    const amountWei = parseEther(recipient.ethAmount.toString())
+                    const usdValue = recipient.usdAmount.toFixed(2)
+
+                    await handler.sendInteractionRequest(event.channelId, {
+                        case: 'transaction',
+                        value: {
+                            id: `tx-${form.requestId}-${recipient.userId}`,
+                            title: `Send ~$${usdValue}`,
+                            description: `Transfer ~$${usdValue} (${recipient.ethAmount.toFixed(6)} ETH) on Base\n\nTo: ${recipient.wallet.slice(0, 6)}...${recipient.wallet.slice(-4)}\n\n⚠️ Make sure you have enough ETH for the transfer plus gas (~$0.01)`,
+                            content: {
+                                case: 'evm',
+                                value: {
+                                    chainId: '8453',
+                                    to: recipient.wallet,
+                                    value: amountWei.toString(),
+                                    data: '0x',
+                                    signerWallet: undefined
+                                }
+                            }
+                        }
+                    }, hexToBytes(event.userId as `0x${string}`))
+                }
+
+            } else if (form.requestId.startsWith('donate-')) {
+                // Donation
+                const amountWei = parseEther(data.ethAmount.toString())
+                const usdValue = data.usdAmount.toFixed(2)
+
+                await handler.sendInteractionRequest(event.channelId, {
+                    case: 'transaction',
+                    value: {
+                        id: `tx-${form.requestId}`,
+                        title: `Send ~$${usdValue}`,
+                        description: `Donate ~$${usdValue} (${data.ethAmount.toFixed(6)} ETH) to TipsoBot\n\nYour support is appreciated! 🙏\n\n⚠️ Make sure you have enough ETH for the transfer plus gas (~$0.01)`,
+                        content: {
+                            case: 'evm',
+                            value: {
+                                chainId: '8453',
+                                to: data.botAddress,
                                 value: amountWei.toString(),
                                 data: '0x',
                                 signerWallet: undefined
@@ -110,7 +144,7 @@ export async function handleFormResponse(
                 }, hexToBytes(event.userId as `0x${string}`))
             }
 
-            console.log('[Form Response] Transaction requests sent')
+            console.log('[Form Response] Transaction request sent')
 
         } catch (error) {
             console.error('[Form Response] Error:', error)
@@ -225,11 +259,118 @@ export async function handleTransactionResponse(
             // Clean up pending transaction
             await deletePendingTransaction(originalRequestId)
 
+        } else if (originalRequestId.startsWith('tip-')) {
+            // Regular tip
+            const pendingTx = await getPendingTransaction(originalRequestId)
+            if (!pendingTx) {
+                console.log('[Transaction Response] No pending tip found (already processed or cancelled)')
+                return
+            }
+
+            const data = pendingTx.data
+
+            // Update global stats
+            await updateGlobalStats({
+                tipsVolume: data.usdAmount,
+                tipsCount: 1
+            })
+
+            // Update user stats
+            await upsertUserStats(pendingTx.userId, 'User', {
+                sentAmount: data.usdAmount,
+                tipsSent: 1
+            })
+            await upsertUserStats(data.recipientId, data.recipientName, {
+                receivedAmount: data.usdAmount,
+                tipsReceived: 1
+            })
+
+            // Send success message
+            await handler.sendMessage(
+                data.channelId,
+                `💸 Sending ~$${data.usdAmount.toFixed(2)} (${data.ethAmount.toFixed(6)} ETH) to <@${data.recipientId}>!`,
+                { mentions: [{ userId: data.recipientId, displayName: data.recipientName }] }
+            )
+
+            // Clean up
+            await deletePendingTransaction(originalRequestId)
+
+        } else if (originalRequestId.startsWith('tipsplit-')) {
+            // Tip split
+            const pendingTx = await getPendingTransaction(originalRequestId)
+            if (!pendingTx) {
+                console.log('[Transaction Response] No pending tipsplit found (already processed or cancelled)')
+                return
+            }
+
+            const data = pendingTx.data
+
+            // Update global stats
+            await updateGlobalStats({
+                tipsVolume: data.totalUsd,
+                tipsCount: 1
+            })
+
+            // Update user stats
+            await upsertUserStats(pendingTx.userId, 'User', {
+                sentAmount: data.totalUsd,
+                tipsSent: 1
+            })
+
+            // Update each recipient's stats
+            for (const recipient of data.recipients) {
+                await upsertUserStats(recipient.userId, recipient.displayName, {
+                    receivedAmount: recipient.usdAmount,
+                    tipsReceived: 1
+                })
+            }
+
+            // Send success message
+            const recipientList = data.recipients.map((r: any) => `<@${r.userId}>`).join(', ')
+            const mentions = data.recipients.map((r: any) => ({ userId: r.userId, displayName: r.displayName }))
+
+            await handler.sendMessage(
+                data.channelId,
+                `💸 Sending ~$${data.totalUsd.toFixed(2)} (${data.totalEth.toFixed(6)} ETH) split between ${recipientList}!`,
+                { mentions }
+            )
+
+            // Clean up
+            await deletePendingTransaction(originalRequestId)
+
+        } else if (originalRequestId.startsWith('donate-')) {
+            // Donation
+            const pendingTx = await getPendingTransaction(originalRequestId)
+            if (!pendingTx) {
+                console.log('[Transaction Response] No pending donation found (already processed or cancelled)')
+                return
+            }
+
+            const data = pendingTx.data
+
+            // Update global stats
+            await updateGlobalStats({
+                donationsVolume: data.usdAmount,
+                donationsCount: 1
+            })
+
+            // Update user stats
+            await upsertUserStats(pendingTx.userId, 'User', {
+                sentAmount: data.usdAmount,
+                donations: 1
+            })
+
+            // Send success message
+            await handler.sendMessage(
+                data.channelId,
+                `❤️ Thank you for your ~$${data.usdAmount.toFixed(2)} (${data.ethAmount.toFixed(6)} ETH) donation! Your support means everything! 🙏`
+            )
+
+            // Clean up
+            await deletePendingTransaction(originalRequestId)
+
         } else {
-            // Handle other transaction types (tip, tipsplit, donate)
-            // These are handled immediately after confirmation for now
-            // TODO: Migrate to database-backed pending transactions
-            console.log('[Transaction Response] Non-contribution transaction:', originalRequestId)
+            console.log('[Transaction Response] Unknown transaction type:', originalRequestId)
         }
 
     } catch (error) {

@@ -128,12 +128,6 @@ async function checkBalance(userWallet: `0x${string}`, requiredEth: bigint): Pro
     }
 }
 
-// Store pending tip confirmations
-const pendingTips = new Map<string, {
-    recipients: Array<{ userId: string, displayName: string, wallet: `0x${string}`, amount: number }>,
-    totalAmount: number
-}>()
-
 const bot = await makeTownsBot(process.env.APP_PRIVATE_DATA!, process.env.JWT_SECRET!, {
     commands,
 })
@@ -299,16 +293,15 @@ bot.onSlashCommand('tip', async (handler, event) => {
             return
         }
 
-        // Store pending tip
+        // Store pending tip in database
         const requestId = `tip-${eventId}`
-        pendingTips.set(requestId, {
-            recipients: [{
-                userId: recipient.userId,
-                displayName: recipient.displayName,
-                wallet: recipientWallet as `0x${string}`,
-                amount: ethAmount // Store ETH amount for transaction
-            }],
-            totalAmount: ethAmount
+        await savePendingTransaction(requestId, 'tip', userId, {
+            recipientId: recipient.userId,
+            recipientName: recipient.displayName,
+            recipientWallet,
+            usdAmount,
+            ethAmount,
+            channelId
         })
 
         console.log('[/tip] Sending confirmation dialog')
@@ -429,11 +422,19 @@ bot.onSlashCommand('tipsplit', async (handler, event) => {
             })
         }
 
-        // Store pending tip
+        // Store pending tip in database
         const requestId = `tipsplit-${eventId}`
-        pendingTips.set(requestId, {
-            recipients,
-            totalAmount: totalEth // Store total ETH
+        await savePendingTransaction(requestId, 'tipsplit', userId, {
+            recipients: recipients.map(r => ({
+                userId: r.userId,
+                displayName: r.displayName,
+                wallet: r.wallet,
+                usdAmount: splitUsd,
+                ethAmount: r.amount
+            })),
+            totalUsd,
+            totalEth,
+            channelId
         })
 
         // Build breakdown
@@ -522,16 +523,13 @@ bot.onSlashCommand('donate', async (handler, event) => {
             return
         }
 
-        // Store pending donation
+        // Store pending donation in database
         const requestId = `donate-${eventId}`
-        pendingTips.set(requestId, {
-            recipients: [{
-                userId: bot.botId,
-                displayName: 'TipsoBot',
-                wallet: bot.appAddress as `0x${string}`,
-                amount: ethAmount // Store ETH amount
-            }],
-            totalAmount: ethAmount
+        await savePendingTransaction(requestId, 'donate', userId, {
+            usdAmount,
+            ethAmount,
+            botAddress: bot.appAddress,
+            channelId
         })
 
         // Send confirmation dialog
@@ -848,7 +846,7 @@ bot.onInteractionResponse(async (handler, event) => {
 
     if (contentCase === 'form') {
         // Handle button clicks (confirm/cancel)
-        await handleFormResponse(handler, event, pendingTips, getEthPrice)
+        await handleFormResponse(handler, event, getEthPrice)
     } else if (contentCase === 'transaction') {
         // Handle transaction confirmations
         await handleTransactionResponse(handler, event, getEthPrice)
