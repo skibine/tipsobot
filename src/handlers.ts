@@ -165,10 +165,17 @@ export async function handleTransactionResponse(
                 amount: data.contributionUsd
             })
 
+            // Check if this contribution just completed the request
+            const now = new Date()
+            const completedAt = updatedRequest.completed_at ? new Date(updatedRequest.completed_at) : null
+            const justCompleted = updatedRequest.is_completed &&
+                                  completedAt &&
+                                  (now.getTime() - completedAt.getTime() < 10000) // Within 10 seconds
+
             // Update global stats
             await updateGlobalStats({
                 crowdfundingVolume: data.contributionUsd,
-                crowdfundingCount: updatedRequest.is_completed && !updatedRequest.completed_at ? 1 : 0
+                crowdfundingCount: justCompleted ? 1 : 0
             })
 
             // Update user stats
