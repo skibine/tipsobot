@@ -1,9 +1,85 @@
 import { makeTownsBot, getSmartAccountFromUserId } from '@towns-protocol/bot'
-import { parseUnits, hexToBytes, formatUnits, parseEther } from 'viem'
+import { parseUnits, hexToBytes, formatUnits, parseEther, formatEther } from 'viem'
+import { createPublicClient, http } from 'viem'
+import { base } from 'viem/chains'
 import commands from './commands'
 
 // ETH on Base - native currency
 const ETH_DECIMALS = 18
+
+// Public client for reading blockchain data
+const publicClient = createPublicClient({
+    chain: base,
+    transport: http()
+})
+
+// Cache for ETH price (update every 5 minutes)
+let ethPriceCache = { price: 0, timestamp: 0 }
+const PRICE_CACHE_DURATION = 5 * 60 * 1000 // 5 minutes
+
+// Get current ETH price in USD
+async function getEthPrice(): Promise<number> {
+    const now = Date.now()
+
+    // Return cached price if still valid
+    if (ethPriceCache.price > 0 && (now - ethPriceCache.timestamp) < PRICE_CACHE_DURATION) {
+        console.log('[getEthPrice] Using cached price:', ethPriceCache.price)
+        return ethPriceCache.price
+    }
+
+    try {
+        // Fetch from CoinGecko API (free, no auth required)
+        const response = await fetch('https://api.coingecko.com/api/v3/simple/price?ids=ethereum&vs_currencies=usd')
+        const data = await response.json()
+        const price = data.ethereum.usd
+
+        console.log('[getEthPrice] Fetched new price:', price)
+
+        // Update cache
+        ethPriceCache = { price, timestamp: now }
+
+        return price
+    } catch (error) {
+        console.error('[getEthPrice] Error fetching price:', error)
+
+        // Fallback: use cached price even if expired, or default to $3000
+        if (ethPriceCache.price > 0) {
+            console.log('[getEthPrice] Using expired cache:', ethPriceCache.price)
+            return ethPriceCache.price
+        }
+
+        console.log('[getEthPrice] Using fallback price: 3000')
+        return 3000 // Fallback price
+    }
+}
+
+// Convert USD to ETH amount
+async function usdToEth(usdAmount: number): Promise<number> {
+    const ethPrice = await getEthPrice()
+    const ethAmount = usdAmount / ethPrice
+    return ethAmount
+}
+
+// Check if user has enough ETH balance
+async function checkBalance(userWallet: `0x${string}`, requiredEth: bigint): Promise<{ hasEnough: boolean, balance: bigint }> {
+    try {
+        const balance = await publicClient.getBalance({ address: userWallet })
+        const hasEnough = balance >= requiredEth
+
+        console.log('[checkBalance]', {
+            wallet: userWallet,
+            balance: formatEther(balance),
+            required: formatEther(requiredEth),
+            hasEnough
+        })
+
+        return { hasEnough, balance }
+    } catch (error) {
+        console.error('[checkBalance] Error:', error)
+        // If we can't check, assume they have enough (let transaction fail naturally)
+        return { hasEnough: true, balance: 0n }
+    }
+}
 
 // Store pending tip confirmations
 const pendingTips = new Map<string, {
@@ -29,19 +105,25 @@ function parseAmountFromArgs(args: string[]): number | null {
 }
 
 bot.onSlashCommand('help', async (handler, { channelId }) => {
+    const ethPrice = await getEthPrice()
+
     await handler.sendMessage(
         channelId,
-        '**TipsoBot - Send ETH tips on Base** 💸\n\n' +
-            '**Commands:**\n' +
-            '• `/tip @username amount` - Send ETH to a user\n' +
-            '• `/tipsplit @user1 @user2 amount` - Split amount equally\n' +
-            '• `/donate amount` - Support the bot with ETH\n' +
-            '• `/help` - Show this message\n' +
-            '• `/time` - Current server time\n\n' +
-            '**Examples:**\n' +
-            '• `/tip @alice 0.001` - Send 0.001 ETH to Alice\n' +
-            '• `/tipsplit @bob @charlie 0.002` - Send 0.001 ETH each\n' +
-            '• `/donate 0.0005` - Donate 0.0005 ETH to the bot\n'
+        `**TipsoBot - Send $ tips on Base** 💸\n\n` +
+            `**Commands:**\n` +
+            `• \`/tip @username amount\` - Send money to a user\n` +
+            `• \`/tipsplit @user1 @user2 amount\` - Split amount equally\n` +
+            `• \`/donate amount\` - Support the bot\n` +
+            `• \`/help\` - Show this message\n` +
+            `• \`/time\` - Current server time\n\n` +
+            `**Examples:**\n` +
+            `• \`/tip @alice 5\` - Send $5 to Alice\n` +
+            `• \`/tipsplit @bob @charlie 10\` - Send $5 each\n` +
+            `• \`/donate 2\` - Donate $2 to the bot\n\n` +
+            `**Info:**\n` +
+            `• All amounts are in USD ($)\n` +
+            `• Converted to ETH automatically\n` +
+            `• Current ETH price: $${ethPrice.toFixed(2)}\n`
     )
 })
 
@@ -59,7 +141,7 @@ bot.onMessage(async (handler, event) => {
     if (isMentioned) {
         await handler.sendMessage(
             channelId,
-            '👋 Hi! I help you send ETH tips on Base.\n\nType `/help` to see all available commands!'
+            '👋 Hi! I help you send $ tips (auto-converted to ETH on Base).\n\nType `/help` to see all available commands!'
         )
         return
     }
@@ -115,16 +197,16 @@ bot.onSlashCommand('tip', async (handler, event) => {
         return
     }
 
-    // Parse amount
-    const amount = parseAmountFromArgs(args)
-    console.log('[/tip] Parsed amount:', amount, 'from args:', args)
+    // Parse amount in USD
+    const usdAmount = parseAmountFromArgs(args)
+    console.log('[/tip] Parsed amount:', usdAmount, 'USD from args:', args)
 
-    if (amount === null) {
+    if (usdAmount === null) {
         await handler.sendMessage(channelId, '❌ Please provide a valid amount.\n**Usage:** `/tip @username amount`')
         return
     }
 
-    if (amount <= 0) {
+    if (usdAmount <= 0) {
         await handler.sendMessage(channelId, '❌ Amount must be greater than 0.')
         return
     }
@@ -140,6 +222,34 @@ bot.onSlashCommand('tip', async (handler, event) => {
             return
         }
 
+        // Get sender's wallet to check balance
+        const senderWallet = await getSmartAccountFromUserId(bot, { userId: userId })
+        if (!senderWallet) {
+            await handler.sendMessage(channelId, '❌ Unable to find your wallet.')
+            return
+        }
+
+        // Convert USD to ETH
+        const ethAmount = await usdToEth(usdAmount)
+        const ethAmountWei = parseEther(ethAmount.toString())
+
+        console.log('[/tip] Converted:', usdAmount, 'USD →', ethAmount, 'ETH')
+
+        // Check if sender has enough balance
+        const { hasEnough, balance } = await checkBalance(senderWallet as `0x${string}`, ethAmountWei)
+
+        if (!hasEnough) {
+            const balanceUsd = (parseFloat(formatEther(balance)) * await getEthPrice()).toFixed(2)
+            await handler.sendMessage(
+                channelId,
+                `❌ Insufficient balance!\n\n` +
+                `**Required:** $${usdAmount.toFixed(2)} (~${ethAmount.toFixed(6)} ETH)\n` +
+                `**Your balance:** $${balanceUsd} (~${formatEther(balance)} ETH)\n\n` +
+                `Please add more funds to your wallet.`
+            )
+            return
+        }
+
         // Store pending tip
         const requestId = `tip-${eventId}`
         pendingTips.set(requestId, {
@@ -147,9 +257,9 @@ bot.onSlashCommand('tip', async (handler, event) => {
                 userId: recipient.userId,
                 displayName: recipient.displayName,
                 wallet: recipientWallet as `0x${string}`,
-                amount
+                amount: ethAmount // Store ETH amount for transaction
             }],
-            totalAmount: amount
+            totalAmount: ethAmount
         })
 
         console.log('[/tip] Sending confirmation dialog')
@@ -160,7 +270,7 @@ bot.onSlashCommand('tip', async (handler, event) => {
             value: {
                 id: requestId,
                 title: `💸 Confirm Tip`,
-                description: `Send ${amount} ETH to <@${recipient.userId}>?\n\nRecipient wallet: ${recipientWallet.slice(0, 6)}...${recipientWallet.slice(-4)}`,
+                description: `Send $${usdAmount.toFixed(2)} (~${ethAmount.toFixed(6)} ETH) to <@${recipient.userId}>?\n\nRecipient wallet: ${recipientWallet.slice(0, 6)}...${recipientWallet.slice(-4)}`,
                 components: [
                     {
                         id: 'confirm',
@@ -206,23 +316,54 @@ bot.onSlashCommand('tipsplit', async (handler, event) => {
         return
     }
 
-    // Parse amount
-    const totalAmount = parseAmountFromArgs(args)
-    console.log('[/tipsplit] Parsed amount:', totalAmount, 'from args:', args)
+    // Parse amount in USD
+    const totalUsd = parseAmountFromArgs(args)
+    console.log('[/tipsplit] Parsed amount:', totalUsd, 'USD from args:', args)
 
-    if (totalAmount === null) {
+    if (totalUsd === null) {
         await handler.sendMessage(channelId, '❌ Please provide a valid amount.\n**Usage:** `/tipsplit @user1 @user2 amount`')
         return
     }
 
-    if (totalAmount <= 0) {
+    if (totalUsd <= 0) {
         await handler.sendMessage(channelId, '❌ Amount must be greater than 0.')
         return
     }
 
-    const splitAmount = parseFloat((totalAmount / mentions.length).toFixed(6))
+    const splitUsd = parseFloat((totalUsd / mentions.length).toFixed(2))
 
     try {
+        // Get sender's wallet to check balance
+        const senderWallet = await getSmartAccountFromUserId(bot, { userId: userId })
+        if (!senderWallet) {
+            await handler.sendMessage(channelId, '❌ Unable to find your wallet.')
+            return
+        }
+
+        // Convert total USD to ETH
+        const totalEth = await usdToEth(totalUsd)
+        const totalEthWei = parseEther(totalEth.toString())
+
+        console.log('[/tipsplit] Converted:', totalUsd, 'USD →', totalEth, 'ETH')
+
+        // Check if sender has enough balance
+        const { hasEnough, balance } = await checkBalance(senderWallet as `0x${string}`, totalEthWei)
+
+        if (!hasEnough) {
+            const balanceUsd = (parseFloat(formatEther(balance)) * await getEthPrice()).toFixed(2)
+            await handler.sendMessage(
+                channelId,
+                `❌ Insufficient balance!\n\n` +
+                `**Required:** $${totalUsd.toFixed(2)} (~${totalEth.toFixed(6)} ETH)\n` +
+                `**Your balance:** $${balanceUsd} (~${formatEther(balance)} ETH)\n\n` +
+                `Please add more funds to your wallet.`
+            )
+            return
+        }
+
+        // Convert individual split amount to ETH
+        const splitEth = await usdToEth(splitUsd)
+
         // Get wallets for all recipients
         const recipients = []
         for (const mention of mentions) {
@@ -235,7 +376,7 @@ bot.onSlashCommand('tipsplit', async (handler, event) => {
                 userId: mention.userId,
                 displayName: mention.displayName,
                 wallet: wallet as `0x${string}`,
-                amount: splitAmount
+                amount: splitEth // Store ETH amount
             })
         }
 
@@ -243,12 +384,12 @@ bot.onSlashCommand('tipsplit', async (handler, event) => {
         const requestId = `tipsplit-${eventId}`
         pendingTips.set(requestId, {
             recipients,
-            totalAmount
+            totalAmount: totalEth // Store total ETH
         })
 
         // Build breakdown
         const breakdown = recipients
-            .map(r => `  • ${r.amount} ETH → <@${r.userId}>`)
+            .map(r => `  • $${splitUsd.toFixed(2)} (~${r.amount.toFixed(6)} ETH) → <@${r.userId}>`)
             .join('\n')
 
         // Send confirmation dialog
@@ -257,7 +398,7 @@ bot.onSlashCommand('tipsplit', async (handler, event) => {
             value: {
                 id: requestId,
                 title: `💸 Confirm Split Tip`,
-                description: `Split ${totalAmount} ETH between ${mentions.length} users (${splitAmount} each):\n\n${breakdown}`,
+                description: `Split $${totalUsd.toFixed(2)} (~${totalEth.toFixed(6)} ETH) between ${mentions.length} users:\n\n${breakdown}`,
                 components: [
                     {
                         id: 'confirm',
@@ -289,21 +430,49 @@ bot.onSlashCommand('donate', async (handler, event) => {
 
     console.log('[/donate] Received:', { args, userId })
 
-    // Parse amount
-    const amount = parseAmountFromArgs(args)
-    console.log('[/donate] Parsed amount:', amount, 'from args:', args)
+    // Parse amount in USD
+    const usdAmount = parseAmountFromArgs(args)
+    console.log('[/donate] Parsed amount:', usdAmount, 'USD from args:', args)
 
-    if (amount === null) {
+    if (usdAmount === null) {
         await handler.sendMessage(channelId, '❌ Please provide a valid amount.\n**Usage:** `/donate amount`')
         return
     }
 
-    if (amount <= 0) {
+    if (usdAmount <= 0) {
         await handler.sendMessage(channelId, '❌ Amount must be greater than 0.')
         return
     }
 
     try {
+        // Get sender's wallet to check balance
+        const senderWallet = await getSmartAccountFromUserId(bot, { userId: userId })
+        if (!senderWallet) {
+            await handler.sendMessage(channelId, '❌ Unable to find your wallet.')
+            return
+        }
+
+        // Convert USD to ETH
+        const ethAmount = await usdToEth(usdAmount)
+        const ethAmountWei = parseEther(ethAmount.toString())
+
+        console.log('[/donate] Converted:', usdAmount, 'USD →', ethAmount, 'ETH')
+
+        // Check if sender has enough balance
+        const { hasEnough, balance } = await checkBalance(senderWallet as `0x${string}`, ethAmountWei)
+
+        if (!hasEnough) {
+            const balanceUsd = (parseFloat(formatEther(balance)) * await getEthPrice()).toFixed(2)
+            await handler.sendMessage(
+                channelId,
+                `❌ Insufficient balance!\n\n` +
+                `**Required:** $${usdAmount.toFixed(2)} (~${ethAmount.toFixed(6)} ETH)\n` +
+                `**Your balance:** $${balanceUsd} (~${formatEther(balance)} ETH)\n\n` +
+                `Please add more funds to your wallet.`
+            )
+            return
+        }
+
         // Store pending donation
         const requestId = `donate-${eventId}`
         pendingTips.set(requestId, {
@@ -311,9 +480,9 @@ bot.onSlashCommand('donate', async (handler, event) => {
                 userId: bot.botId,
                 displayName: 'TipsoBot',
                 wallet: bot.appAddress as `0x${string}`,
-                amount
+                amount: ethAmount // Store ETH amount
             }],
-            totalAmount: amount
+            totalAmount: ethAmount
         })
 
         // Send confirmation dialog
@@ -322,7 +491,7 @@ bot.onSlashCommand('donate', async (handler, event) => {
             value: {
                 id: requestId,
                 title: `❤️ Confirm Donation`,
-                description: `Donate ${amount} ETH to support TipsoBot?\n\nYour support helps keep this bot running! 🙏`,
+                description: `Donate $${usdAmount.toFixed(2)} (~${ethAmount.toFixed(6)} ETH) to support TipsoBot?\n\nYour support helps keep this bot running! 🙏`,
                 components: [
                     {
                         id: 'confirm',
@@ -388,13 +557,17 @@ bot.onInteractionResponse(async (handler, event) => {
                 console.log('[onInteractionResponse] Amount in wei:', amountWei.toString())
                 console.log('[onInteractionResponse] Chain:', 'Base (8453)')
 
+                // Calculate USD value
+                const ethPrice = await getEthPrice()
+                const usdValue = (recipient.amount * ethPrice).toFixed(2)
+
                 // Send transaction request to user (native ETH transfer)
                 await handler.sendInteractionRequest(event.channelId, {
                     case: 'transaction',
                     value: {
                         id: `tx-${form.requestId}-${recipient.userId}`,
-                        title: `Send ${recipient.amount} ETH`,
-                        description: `Transfer ${recipient.amount} ETH on Base\n\nTo: ${recipient.wallet.slice(0, 6)}...${recipient.wallet.slice(-4)}\n\n⚠️ Make sure you have:\n• ${recipient.amount} ETH on Base\n• Extra ETH for gas (~$0.01)`,
+                        title: `Send ~$${usdValue}`,
+                        description: `Transfer ~$${usdValue} (${recipient.amount.toFixed(6)} ETH) on Base\n\nTo: ${recipient.wallet.slice(0, 6)}...${recipient.wallet.slice(-4)}\n\n⚠️ Make sure you have enough ETH for the transfer plus gas (~$0.01)`,
                         content: {
                             case: 'evm',
                             value: {
@@ -411,23 +584,26 @@ bot.onInteractionResponse(async (handler, event) => {
                 console.log('[onInteractionResponse] Transaction request sent for:', recipient.userId)
             }
 
-            // Send success message
+            // Send success message with USD values
+            const ethPrice = await getEthPrice()
+            const totalUsd = (tipData.totalAmount * ethPrice).toFixed(2)
+
             if (form.requestId.startsWith('donate-')) {
-                await handler.sendMessage(event.channelId, `❤️ Thank you for your ${tipData.totalAmount} ETH donation! Your support means everything! 🙏`)
+                await handler.sendMessage(event.channelId, `❤️ Thank you for your ~$${totalUsd} (${tipData.totalAmount.toFixed(6)} ETH) donation! Your support means everything! 🙏`)
             } else if (form.requestId.startsWith('tipsplit-')) {
                 const recipientList = tipData.recipients
                     .map(r => `<@${r.userId}>`)
                     .join(', ')
                 await handler.sendMessage(
                     event.channelId,
-                    `💸 Sending ${tipData.totalAmount} ETH split between ${recipientList}!`,
+                    `💸 Sending ~$${totalUsd} (${tipData.totalAmount.toFixed(6)} ETH) split between ${recipientList}!`,
                     { mentions: tipData.recipients.map(r => ({ userId: r.userId, displayName: r.displayName })) }
                 )
             } else {
                 const recipient = tipData.recipients[0]
                 await handler.sendMessage(
                     event.channelId,
-                    `💸 Sending ${tipData.totalAmount} ETH to <@${recipient.userId}>!`,
+                    `💸 Sending ~$${totalUsd} (${tipData.totalAmount.toFixed(6)} ETH) to <@${recipient.userId}>!`,
                     { mentions: [{ userId: recipient.userId, displayName: recipient.displayName }] }
                 )
             }
@@ -441,15 +617,17 @@ bot.onInteractionResponse(async (handler, event) => {
 
 // Handle direct tips to the bot (like using Towns native tip feature)
 bot.onTip(async (handler, event) => {
-    const { receiverAddress, amount, currency, channelId } = event
+    const { receiverAddress, amount, channelId } = event
 
     // Check if tip is for the bot
     if (receiverAddress.toLowerCase() === bot.appAddress.toLowerCase()) {
-        const formattedAmount = formatUnits(amount, ETH_DECIMALS)
+        const ethAmount = parseFloat(formatUnits(amount, ETH_DECIMALS))
+        const ethPrice = await getEthPrice()
+        const usdAmount = (ethAmount * ethPrice).toFixed(2)
 
         await handler.sendMessage(
             channelId,
-            `❤️ Thank you for the tip! Received ${formattedAmount} ETH! 🙏`
+            `❤️ Thank you for the tip! Received ~$${usdAmount} (${ethAmount.toFixed(6)} ETH)! 🙏`
         )
     }
 })
