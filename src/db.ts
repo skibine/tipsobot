@@ -111,23 +111,23 @@ export async function upsertUserStats(
     let paramIndex = 3
 
     if (stats.sentAmount !== undefined) {
-        updates.push(`total_sent = total_sent + $${paramIndex++}`)
+        updates.push(`total_sent = user_stats.total_sent + $${paramIndex++}`)
         values.push(stats.sentAmount)
     }
     if (stats.receivedAmount !== undefined) {
-        updates.push(`total_received = total_received + $${paramIndex++}`)
+        updates.push(`total_received = user_stats.total_received + $${paramIndex++}`)
         values.push(stats.receivedAmount)
     }
     if (stats.tipsSent !== undefined) {
-        updates.push(`tips_sent = tips_sent + $${paramIndex++}`)
+        updates.push(`tips_sent = user_stats.tips_sent + $${paramIndex++}`)
         values.push(stats.tipsSent)
     }
     if (stats.tipsReceived !== undefined) {
-        updates.push(`tips_received = tips_received + $${paramIndex++}`)
+        updates.push(`tips_received = user_stats.tips_received + $${paramIndex++}`)
         values.push(stats.tipsReceived)
     }
     if (stats.donations !== undefined) {
-        updates.push(`donations = donations + $${paramIndex++}`)
+        updates.push(`donations = user_stats.donations + $${paramIndex++}`)
         values.push(stats.donations)
     }
 
