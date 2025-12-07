@@ -1,108 +1,120 @@
-# Quickstart Bot
+# TipsoBot 💸
 
-A simple, barebones bot example perfect for beginners learning to build Towns bots.
+A Towns Protocol bot for sending tips in USD (auto-converted to ETH on Base).
 
-# Features
+## Features
 
-- **Slash commands**: Registering and handling `/commands`
-- **Message handling**: Detecting keywords in messages
-- **Sending messages**: Posting messages to channels
-- **Adding reactions**: Attaching emoji reactions to messages
-- **Reaction events**: Responding to user reactions
+- 💸 **Tipping**: Send money to users in USD (auto-converted to ETH)
+- 🎯 **Tip Split**: Split tips between multiple users
+- ❤️ **Donations**: Support the bot
+- 💰 **Crowdfunding**: Create payment requests and collect contributions
+- 📊 **Statistics**: Global bot statistics across all channels
+- 🏆 **Leaderboard**: Top tippers and donators
 
-## Slash Commands
+## Setup
 
-- `/help` - Shows available commands and message triggers
-- `/time` - Displays the current server time
+### Requirements
 
-## Message Triggers
+- Node.js 18+
+- PostgreSQL 14+
+- Towns Protocol bot credentials
 
-- Say "hello" - Bot greets you back
-- Say "ping" - Bot responds with "Pong!" and latency
-- Say "react" - Bot adds a thumbs up reaction to your message
+### Installation
 
-You will need to mention the bot if you're using the `Mentions, Commands, Replies & Reactions` message behavior for your bot.
+1. Install dependencies:
+```bash
+npm install
+```
 
-## Reaction Handling
+2. Create `.env` file:
+```bash
+cp .env.example .env
+```
 
-- React with 👋 to any message - Bot responds with "I saw your wave!"
+3. Configure environment variables in `.env`:
+```
+APP_PRIVATE_DATA=your_bot_private_data_here
+JWT_SECRET=your_jwt_secret_here
+DATABASE_URL=postgresql://username:password@localhost:5432/tipsobot
+DATABASE_SSL=false
+```
 
-# Setup
+### Database Setup
 
-1. Copy `.env.sample` to `.env` and fill in your credentials:
+1. Create PostgreSQL database:
+```bash
+createdb tipsobot
+```
 
-   ```bash
-   cp .env.sample .env
-   ```
+2. The bot will automatically initialize the database schema on first run.
 
-2. Install dependencies:
+Alternatively, you can manually run the schema:
+```bash
+psql tipsobot < src/schema.sql
+```
 
-   ```bash
-   bun install
-   ```
+### Running
 
-3. Run the bot:
-   ```bash
-   bun run dev
-   ```
+Development:
+```bash
+npm run dev
+```
 
-# Environment Variables
+Production:
+```bash
+npm run build
+npm start
+```
 
-Required variables in `.env`:
+## Commands
 
-- `APP_PRIVATE_DATA` - Your Towns app private data (base64 encoded)
-- `JWT_SECRET` - JWT secret for webhook authentication
-- `PORT` - Port to run the bot on (optional, defaults to 5123)
+- `/tip @user amount` - Send money to a user
+- `/tipsplit @user1 @user2 amount` - Split equally between users
+- `/donate amount` - Support the bot
+- `/request amount description` - Create payment request (24h cooldown)
+- `/contribute requestId amount` - Contribute to a request
+- `/stats` - View global bot statistics
+- `/leaderboard` - View top tippers & donators
+- `/help` - Show help message
+- `/time` - Current server time
 
-# Usage
+## Architecture
 
-Once the bot is running, installed to a space and added to a channel:
+### Database
 
-**Try the slash commands:**
+- **PostgreSQL** for persistent storage
+- **Global stats** tracking across all channels
+- **User stats** for individual statistics
+- **Payment requests** for crowdfunding
+- **Contributions** tracking
+- **User cooldowns** for rate limiting
+- **Pending transactions** for delayed confirmation
 
-- `/help` - See all available features
-- `/time` - Get the current time
+### Key Features
 
-**Try the message triggers:**
+1. **Stateless Transaction Handling**:
+   - Contributions are saved to database but NOT finalized until blockchain transaction is confirmed
+   - Fixes race condition where stats were updated before user could cancel
 
-- Type "hello" anywhere in your message
-- Type "ping" to check bot latency
-- Type "react" to get a reaction
+2. **24-Hour Cooldown**:
+   - Users can only create one `/request` every 24 hours
+   - Prevents spam
 
-**Try reactions:**
+3. **USD to ETH Conversion**:
+   - Automatic conversion using CoinGecko API
+   - 5-minute price cache with fallback
 
-- Add a 👋 reaction to any message
+4. **Balance Checking**:
+   - Checks user balance before allowing transactions
 
-# Code Structure
+## Code Structure
 
-The bot consists of two main files:
+- `src/index.ts` - Main bot logic and command handlers
+- `src/commands.ts` - Slash command definitions
+- `src/db.ts` - PostgreSQL database functions
+- `src/handlers.ts` - Interaction response handlers
+- `src/schema.sql` - Database schema
 
-## `src/commands.ts`
+## License
 
-Defines the slash commands available to users. Commands registered here appear in the slash command menu.
-
-## `src/index.ts`
-
-Main bot logic with:
-
-1. **Bot initialization** (`makeTownsBot`) - Creates bot instance with credentials and commands
-2. **Slash command handlers** (`onSlashCommand`) - Handle `/help` and `/time` commands
-3. **Message handler** (`onMessage`) - Respond to message keywords (hello, ping, react)
-4. **Reaction handler** (`onReaction`) - Respond to emoji reactions (👋)
-5. **Bot server setup** (`bot.start()`) - Starts the bot server with a Hono HTTP server
-
-## Extending this Bot
-
-To add your own features:
-
-1. **Add a slash command:**
-
-   - Add to `src/commands.ts`
-   - Go to `src/index.ts` and create a handler with `bot.onSlashCommand('yourcommand', async (handler, event) => { ... })`
-
-2. **Add message triggers:**
-
-   - Add conditions in the `bot.onMessage()` handler
-
-3. **Handle more events:**
-   - Use `bot.onReaction()`, `bot.onMessageEdit()`, `bot.onChannelJoin()`, etc.
+MIT
