@@ -872,60 +872,53 @@ bot.onTip(async (handler, event) => {
     }
 })
 
-// Initialize database before starting bot
-async function startBot() {
+// Initialize database and start bot
+console.log('[Bot] Initializing database...')
+await initDatabase()
+console.log('[DB] Database initialized')
+
+console.log('[Bot] Starting bot...')
+const app = bot.start()
+
+// Health check route
+app.get('/', (c) => c.text('TipsoBot is running! 💸'))
+
+// Webhook route for Towns
+app.post('/webhook', async (c) => {
+    // Get the webhook body
+    const body = await c.req.json()
+    console.log('Webhook received:', body)
+
+    // Return 200 so Towns knows we received it
+    return c.json({ ok: true }, 200)
+})
+
+// Cleanup old pending transactions every hour
+setInterval(async () => {
     try {
-        console.log('[Bot] Initializing database...')
-        await initDatabase()
-
-        console.log('[Bot] Starting bot...')
-        const app = bot.start()
-
-        // Health check route
-        app.get('/', (c) => c.text('TipsoBot is running! 💸'))
-
-        // Webhook route for Towns
-        app.post('/webhook', async (c) => {
-            // Get the webhook body
-            const body = await c.req.json()
-            console.log('Webhook received:', body)
-
-            // Return 200 so Towns knows we received it
-            return c.json({ ok: true }, 200)
-        })
-
-        // Cleanup old pending transactions every hour
-        setInterval(async () => {
-            try {
-                console.log('[Cleanup] Running cleanup of old pending transactions...')
-                await cleanupOldTransactions()
-            } catch (error) {
-                console.error('[Cleanup] Error:', error)
-            }
-        }, 60 * 60 * 1000) // 1 hour
-
-        // Graceful shutdown
-        const shutdown = async (signal: string) => {
-            console.log(`\n[Bot] Received ${signal}, shutting down gracefully...`)
-            try {
-                await closeDatabase()
-                console.log('[Bot] Database connection closed')
-                process.exit(0)
-            } catch (error) {
-                console.error('[Bot] Error during shutdown:', error)
-                process.exit(1)
-            }
-        }
-
-        process.on('SIGTERM', () => shutdown('SIGTERM'))
-        process.on('SIGINT', () => shutdown('SIGINT'))
-
-        console.log('[Bot] Bot started successfully!')
-        return app
+        console.log('[Cleanup] Running cleanup of old pending transactions...')
+        await cleanupOldTransactions()
     } catch (error) {
-        console.error('[Bot] Fatal error during startup:', error)
+        console.error('[Cleanup] Error:', error)
+    }
+}, 60 * 60 * 1000) // 1 hour
+
+// Graceful shutdown
+const shutdown = async (signal: string) => {
+    console.log(`\n[Bot] Received ${signal}, shutting down gracefully...`)
+    try {
+        await closeDatabase()
+        console.log('[Bot] Database connection closed')
+        process.exit(0)
+    } catch (error) {
+        console.error('[Bot] Error during shutdown:', error)
         process.exit(1)
     }
 }
 
-export default startBot()
+process.on('SIGTERM', () => shutdown('SIGTERM'))
+process.on('SIGINT', () => shutdown('SIGINT'))
+
+console.log('[Bot] Bot started successfully!')
+
+export default app
