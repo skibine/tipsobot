@@ -3,6 +3,28 @@ import { parseUnits, hexToBytes, formatUnits, parseEther, formatEther } from 'vi
 import { createPublicClient, http } from 'viem'
 import { base } from 'viem/chains'
 import commands from './commands'
+import {
+    initDatabase,
+    closeDatabase,
+    getGlobalStats,
+    updateGlobalStats,
+    getUserStats,
+    upsertUserStats,
+    getTopTippers,
+    getTopDonators,
+    createPaymentRequest,
+    getPaymentRequest,
+    addContribution,
+    getContributions,
+    checkCooldown,
+    updateCooldown,
+    getRemainingCooldown,
+    savePendingTransaction,
+    getPendingTransaction,
+    deletePendingTransaction,
+    cleanupOldTransactions
+} from './db'
+import { handleFormResponse, handleTransactionResponse } from './handlers'
 
 // ETH on Base - native currency
 const ETH_DECIMALS = 18
@@ -17,112 +39,17 @@ const publicClient = createPublicClient({
 let ethPriceCache = { price: 0, timestamp: 0 }
 const PRICE_CACHE_DURATION = 5 * 60 * 1000 // 5 minutes
 
-// Statistics storage
-interface UserStats {
-    totalSent: number // in USD
-    totalReceived: number // in USD
-    tipsSent: number
-    tipsReceived: number
-    donations: number
-}
+// Cooldown durations
+const REQUEST_COOLDOWN = 24 * 60 * 60 * 1000 // 24 hours
 
-const userStats = new Map<string, UserStats>()
-
-// Global bot statistics (across all channels)
-interface GlobalStats {
-    totalTipsVolume: number // Total USD volume of all tips
-    totalTipsCount: number // Number of tip transactions
-    totalDonationsVolume: number // Total USD donated to bot
-    totalDonationsCount: number // Number of donations
-    totalCrowdfundingVolume: number // Total USD raised via payment requests
-    totalCrowdfundingCount: number // Number of completed payment requests
-}
-
-const globalStats: GlobalStats = {
-    totalTipsVolume: 0,
-    totalTipsCount: 0,
-    totalDonationsVolume: 0,
-    totalDonationsCount: 0,
-    totalCrowdfundingVolume: 0,
-    totalCrowdfundingCount: 0
-}
-
-// Leaderboard data
-interface LeaderboardEntry {
-    userId: string
-    displayName: string
-    amount: number // in USD
-    count: number
-}
-
-const tippersLeaderboard: LeaderboardEntry[] = []
-const donatorsLeaderboard: LeaderboardEntry[] = []
-
-// Payment requests storage
-interface PaymentRequest {
-    id: string
-    creatorId: string
-    creatorName: string
-    amount: number // USD
-    description: string
-    contributors: Array<{ userId: string, displayName: string, amount: number }>
-    totalCollected: number
-    channelId: string
-    createdAt: Date
-    lastProgressMessageId?: string // Store last progress message ID for deletion
-}
-
-const paymentRequests = new Map<string, PaymentRequest>()
-
-
-// Helper functions for stats
-function getOrCreateStats(userId: string): UserStats {
-    if (!userStats.has(userId)) {
-        userStats.set(userId, {
-            totalSent: 0,
-            totalReceived: 0,
-            tipsSent: 0,
-            tipsReceived: 0,
-            donations: 0
-        })
+// Helper function to format time remaining
+function formatTimeRemaining(ms: number): string {
+    const hours = Math.floor(ms / (60 * 60 * 1000))
+    const minutes = Math.floor((ms % (60 * 60 * 1000)) / (60 * 1000))
+    if (hours > 0) {
+        return `${hours}h ${minutes}m`
     }
-    return userStats.get(userId)!
-}
-
-function updateSenderStats(userId: string, usdAmount: number, isDonation: boolean = false) {
-    const stats = getOrCreateStats(userId)
-    stats.totalSent += usdAmount
-    if (isDonation) {
-        stats.donations += 1
-    } else {
-        stats.tipsSent += 1
-    }
-}
-
-function updateReceiverStats(userId: string, usdAmount: number) {
-    const stats = getOrCreateStats(userId)
-    stats.totalReceived += usdAmount
-    stats.tipsReceived += 1
-}
-
-function updateLeaderboard(userId: string, displayName: string, usdAmount: number, isDonation: boolean = false) {
-    const leaderboard = isDonation ? donatorsLeaderboard : tippersLeaderboard
-
-    const existing = leaderboard.find(e => e.userId === userId)
-    if (existing) {
-        existing.amount += usdAmount
-        existing.count += 1
-    } else {
-        leaderboard.push({ userId, displayName, amount: usdAmount, count: 1 })
-    }
-
-    // Sort by amount descending
-    leaderboard.sort((a, b) => b.amount - a.amount)
-
-    // Keep top 10 only
-    if (leaderboard.length > 10) {
-        leaderboard.length = 10
-    }
+    return `${minutes}m`
 }
 
 // Get current ETH price in USD
@@ -643,66 +570,99 @@ bot.onSlashCommand('donate', async (handler, event) => {
 bot.onSlashCommand('stats', async (handler, event) => {
     const { channelId } = event
 
-    const ethPrice = await getEthPrice()
-    const tipsEth = globalStats.totalTipsVolume / ethPrice
-    const donationsEth = globalStats.totalDonationsVolume / ethPrice
-    const crowdfundingEth = globalStats.totalCrowdfundingVolume / ethPrice
-    const totalEth = (globalStats.totalTipsVolume + globalStats.totalDonationsVolume + globalStats.totalCrowdfundingVolume) / ethPrice
+    try {
+        const stats = await getGlobalStats()
+        const ethPrice = await getEthPrice()
 
-    await handler.sendMessage(
-        channelId,
-        `**📊 TipsoBot Statistics**\n\n` +
-            `**💸 Tips:**\n` +
-            `• Volume: $${globalStats.totalTipsVolume.toFixed(2)} (~${tipsEth.toFixed(6)} ETH)\n` +
-            `• Count: ${globalStats.totalTipsCount} transactions\n\n` +
-            `**❤️ Donations to Bot:**\n` +
-            `• Volume: $${globalStats.totalDonationsVolume.toFixed(2)} (~${donationsEth.toFixed(6)} ETH)\n` +
-            `• Count: ${globalStats.totalDonationsCount} donations\n\n` +
-            `**💰 Crowdfunding:**\n` +
-            `• Volume: $${globalStats.totalCrowdfundingVolume.toFixed(2)} (~${crowdfundingEth.toFixed(6)} ETH)\n` +
-            `• Requests: ${globalStats.totalCrowdfundingCount} funded\n\n` +
-            `**🌐 Total Volume:** $${(globalStats.totalTipsVolume + globalStats.totalDonationsVolume + globalStats.totalCrowdfundingVolume).toFixed(2)} (~${totalEth.toFixed(6)} ETH)\n\n` +
-            `Use \`/leaderboard\` to see top contributors! 🏆`
-    )
+        const tipsVolume = parseFloat(stats.total_tips_volume) || 0
+        const donationsVolume = parseFloat(stats.total_donations_volume) || 0
+        const crowdfundingVolume = parseFloat(stats.total_crowdfunding_volume) || 0
+
+        const tipsEth = tipsVolume / ethPrice
+        const donationsEth = donationsVolume / ethPrice
+        const crowdfundingEth = crowdfundingVolume / ethPrice
+        const totalEth = (tipsVolume + donationsVolume + crowdfundingVolume) / ethPrice
+
+        await handler.sendMessage(
+            channelId,
+            `**📊 TipsoBot Statistics**\n\n` +
+                `**💸 Tips:**\n` +
+                `• Volume: $${tipsVolume.toFixed(2)} (~${tipsEth.toFixed(6)} ETH)\n` +
+                `• Count: ${stats.total_tips_count} transactions\n\n` +
+                `**❤️ Donations to Bot:**\n` +
+                `• Volume: $${donationsVolume.toFixed(2)} (~${donationsEth.toFixed(6)} ETH)\n` +
+                `• Count: ${stats.total_donations_count} donations\n\n` +
+                `**💰 Crowdfunding:**\n` +
+                `• Volume: $${crowdfundingVolume.toFixed(2)} (~${crowdfundingEth.toFixed(6)} ETH)\n` +
+                `• Requests: ${stats.total_crowdfunding_count} funded\n\n` +
+                `**🌐 Total Volume:** $${(tipsVolume + donationsVolume + crowdfundingVolume).toFixed(2)} (~${totalEth.toFixed(6)} ETH)\n\n` +
+                `Use \`/leaderboard\` to see top contributors! 🏆`
+        )
+    } catch (error) {
+        console.error('[/stats] Error:', error)
+        await handler.sendMessage(channelId, '❌ Failed to fetch statistics.')
+    }
 })
 
 // /leaderboard - top tippers and donators
 bot.onSlashCommand('leaderboard', async (handler, { channelId }) => {
-    let message = `**🏆 Leaderboard 🏆**\n\n`
+    try {
+        const topTippers = await getTopTippers(5)
+        const topDonators = await getTopDonators(5)
 
-    // Top Tippers
-    message += `**Top Tippers:**\n`
-    if (tippersLeaderboard.length === 0) {
-        message += `_No tippers yet_\n`
-    } else {
-        tippersLeaderboard.slice(0, 5).forEach((entry, index) => {
-            const medal = index === 0 ? '🥇' : index === 1 ? '🥈' : index === 2 ? '🥉' : `${index + 1}.`
-            message += `${medal} <@${entry.userId}>: $${entry.amount.toFixed(2)} (${entry.count} tips)\n`
-        })
+        let message = `**🏆 Leaderboard 🏆**\n\n`
+
+        // Top Tippers
+        message += `**Top Tippers:**\n`
+        if (topTippers.length === 0) {
+            message += `_No tippers yet_\n`
+        } else {
+            topTippers.forEach((entry, index) => {
+                const medal = index === 0 ? '🥇' : index === 1 ? '🥈' : index === 2 ? '🥉' : `${index + 1}.`
+                const amount = parseFloat(entry.amount) || 0
+                message += `${medal} <@${entry.user_id}>: $${amount.toFixed(2)} (${entry.count} tips)\n`
+            })
+        }
+
+        message += `\n**Top Donators:**\n`
+        if (topDonators.length === 0) {
+            message += `_No donators yet_\n`
+        } else {
+            topDonators.forEach((entry, index) => {
+                const medal = index === 0 ? '🥇' : index === 1 ? '🥈' : index === 2 ? '🥉' : `${index + 1}.`
+                const amount = parseFloat(entry.amount) || 0
+                message += `${medal} <@${entry.user_id}>: $${amount.toFixed(2)} (${entry.count} donations)\n`
+            })
+        }
+
+        // Collect all mentioned users for proper mentions
+        const mentions = [
+            ...topTippers.map(e => ({ userId: e.user_id, displayName: e.display_name || 'User' })),
+            ...topDonators.map(e => ({ userId: e.user_id, displayName: e.display_name || 'User' }))
+        ]
+
+        await handler.sendMessage(channelId, message, { mentions })
+    } catch (error) {
+        console.error('[/leaderboard] Error:', error)
+        await handler.sendMessage(channelId, '❌ Failed to fetch leaderboard.')
     }
-
-    message += `\n**Top Donators:**\n`
-    if (donatorsLeaderboard.length === 0) {
-        message += `_No donators yet_\n`
-    } else {
-        donatorsLeaderboard.slice(0, 5).forEach((entry, index) => {
-            const medal = index === 0 ? '🥇' : index === 1 ? '🥈' : index === 2 ? '🥉' : `${index + 1}.`
-            message += `${medal} <@${entry.userId}>: $${entry.amount.toFixed(2)} (${entry.count} donations)\n`
-        })
-    }
-
-    // Collect all mentioned users for proper mentions
-    const mentions = [
-        ...tippersLeaderboard.slice(0, 5).map(e => ({ userId: e.userId, displayName: e.displayName })),
-        ...donatorsLeaderboard.slice(0, 5).map(e => ({ userId: e.userId, displayName: e.displayName }))
-    ]
-
-    await handler.sendMessage(channelId, message, { mentions })
 })
 
 // /request amount description - create payment request
 bot.onSlashCommand('request', async (handler, event) => {
     const { args, userId, channelId, eventId } = event
+
+    // Check cooldown
+    const canUse = await checkCooldown(userId, 'request', REQUEST_COOLDOWN)
+    if (!canUse) {
+        const remaining = await getRemainingCooldown(userId, 'request', REQUEST_COOLDOWN)
+        await handler.sendMessage(
+            channelId,
+            `⏰ You can only create one payment request every 24 hours.\n\n` +
+            `**Time remaining:** ${formatTimeRemaining(remaining)}`
+        )
+        return
+    }
 
     // First arg is amount, rest is description
     const amountStr = args[0]
@@ -735,20 +695,18 @@ bot.onSlashCommand('request', async (handler, event) => {
         // Create unique request ID
         const requestId = `req-${eventId}`
 
-        // Store payment request
-        const paymentRequest: PaymentRequest = {
+        // Store payment request in database
+        await createPaymentRequest({
             id: requestId,
             creatorId: userId,
-            creatorName: event.mentions && event.mentions.length > 0 ? event.mentions[0].displayName : 'User',
+            creatorName: 'User', // Will be updated when they contribute
             amount,
             description: description.trim(),
-            contributors: [],
-            totalCollected: 0,
-            channelId,
-            createdAt: new Date()
-        }
+            channelId
+        })
 
-        paymentRequests.set(requestId, paymentRequest)
+        // Update cooldown
+        await updateCooldown(userId, 'request')
 
         console.log('[/request] Created payment request:', requestId, 'amount:', amount, 'description:', description)
 
@@ -757,7 +715,7 @@ bot.onSlashCommand('request', async (handler, event) => {
             channelId,
             `**💰 Payment Request Created**\n\n` +
                 `**Goal:** $${amount.toFixed(2)}\n` +
-                `**Description:** ${description}\n` +
+                `**Description:** ${description.trim()}\n` +
                 `**Collected:** $0.00 / $${amount.toFixed(2)}\n` +
                 `**Progress:** ▱▱▱▱▱▱▱▱▱▱ 0%\n\n` +
                 `To contribute, use: \`/contribute ${requestId} amount\`\n` +
@@ -793,14 +751,14 @@ bot.onSlashCommand('contribute', async (handler, event) => {
         return
     }
 
-    // Find payment request
-    const paymentRequest = paymentRequests.get(requestId)
-    if (!paymentRequest) {
-        await handler.sendMessage(channelId, '❌ Payment request not found. Please check the request ID.')
-        return
-    }
-
     try {
+        // Find payment request in database
+        const paymentRequest = await getPaymentRequest(requestId)
+        if (!paymentRequest) {
+            await handler.sendMessage(channelId, '❌ Payment request not found. Please check the request ID.')
+            return
+        }
+
         // Get contributor wallet
         const contributorWallet = await getSmartAccountFromUserId(bot, { userId: userId })
         if (!contributorWallet) {
@@ -809,7 +767,7 @@ bot.onSlashCommand('contribute', async (handler, event) => {
         }
 
         // Get creator wallet
-        const creatorWallet = await getSmartAccountFromUserId(bot, { userId: paymentRequest.creatorId })
+        const creatorWallet = await getSmartAccountFromUserId(bot, { userId: paymentRequest.creator_id })
         if (!creatorWallet) {
             await handler.sendMessage(channelId, '❌ Unable to find creator wallet.')
             return
@@ -836,22 +794,18 @@ bot.onSlashCommand('contribute', async (handler, event) => {
             return
         }
 
-        // Store pending contribution with all tracking data
+        // Store pending contribution in database (will be processed after transaction confirmation)
         const contributionId = `contrib-${eventId}`
-        const contributionData = {
-            recipients: [{
-                userId: paymentRequest.creatorId,
-                displayName: paymentRequest.creatorName,
-                wallet: creatorWallet as `0x${string}`,
-                amount: ethAmount
-            }],
-            totalAmount: ethAmount,
-            paymentRequestId: requestId,
+        await savePendingTransaction(contributionId, 'contribute', userId, {
+            requestId,
+            creatorId: paymentRequest.creator_id,
+            creatorName: paymentRequest.creator_name,
+            creatorWallet,
             contributorId: userId,
-            contributionUsd: amount
-        } as any
-
-        pendingTips.set(contributionId, contributionData)
+            contributionUsd: amount,
+            ethAmount,
+            channelId
+        })
 
         console.log('[/contribute] Sending confirmation for contribution to:', requestId)
 
@@ -861,7 +815,7 @@ bot.onSlashCommand('contribute', async (handler, event) => {
             value: {
                 id: contributionId,
                 title: `💰 Confirm Contribution`,
-                description: `Contribute $${amount.toFixed(2)} (~${ethAmount.toFixed(6)} ETH) to:\n\n"${paymentRequest.description}"\n\nCreated by: <@${paymentRequest.creatorId}>`,
+                description: `Contribute $${amount.toFixed(2)} (~${ethAmount.toFixed(6)} ETH) to:\n\n"${paymentRequest.description}"\n\nCreated by: <@${paymentRequest.creator_id}>`,
                 components: [
                     {
                         id: 'confirm',
@@ -887,206 +841,17 @@ bot.onSlashCommand('contribute', async (handler, event) => {
     }
 })
 
-// Handle interaction responses (button clicks)
+// Handle interaction responses (button clicks and transaction confirmations)
 bot.onInteractionResponse(async (handler, event) => {
-    console.log('[onInteractionResponse] Received:', event.response.payload.content?.case)
+    const contentCase = event.response.payload.content?.case
+    console.log('[onInteractionResponse] Received:', contentCase)
 
-    if (event.response.payload.content?.case !== 'form') return
-
-    const form = event.response.payload.content.value
-    const tipData = pendingTips.get(form.requestId)
-
-    console.log('[onInteractionResponse] Request ID:', form.requestId, 'Found data:', !!tipData)
-
-    if (!tipData) return
-
-    // Clean up stored data
-    pendingTips.delete(form.requestId)
-
-    // Check which button was clicked
-    const clickedButton = form.components.find(c => c.component.case === 'button')
-    console.log('[onInteractionResponse] Button clicked:', clickedButton?.id)
-
-    if (!clickedButton) return
-
-    if (clickedButton.id === 'cancel') {
-        await handler.sendMessage(event.channelId, '❌ Cancelled.')
-        return
-    }
-
-    if (clickedButton.id === 'confirm') {
-        try {
-            console.log('[onInteractionResponse] Confirming, recipients:', tipData.recipients.length)
-
-            // Send transaction request for each recipient
-            for (const recipient of tipData.recipients) {
-                const amountWei = parseEther(recipient.amount.toString())
-
-                console.log('[onInteractionResponse] Sending tx for:', recipient.userId, 'amount:', recipient.amount, 'ETH')
-                console.log('[onInteractionResponse] Recipient wallet:', recipient.wallet)
-                console.log('[onInteractionResponse] Amount in wei:', amountWei.toString())
-                console.log('[onInteractionResponse] Chain:', 'Base (8453)')
-
-                // Calculate USD value
-                const ethPrice = await getEthPrice()
-                const usdValue = (recipient.amount * ethPrice).toFixed(2)
-
-                // Send transaction request to user (native ETH transfer)
-                await handler.sendInteractionRequest(event.channelId, {
-                    case: 'transaction',
-                    value: {
-                        id: `tx-${form.requestId}-${recipient.userId}`,
-                        title: `Send ~$${usdValue}`,
-                        description: `Transfer ~$${usdValue} (${recipient.amount.toFixed(6)} ETH) on Base\n\nTo: ${recipient.wallet.slice(0, 6)}...${recipient.wallet.slice(-4)}\n\n⚠️ Make sure you have enough ETH for the transfer plus gas (~$0.01)`,
-                        content: {
-                            case: 'evm',
-                            value: {
-                                chainId: '8453', // Base
-                                to: recipient.wallet,
-                                value: amountWei.toString(),
-                                data: '0x',
-                                signerWallet: undefined
-                            }
-                        }
-                    }
-                }, hexToBytes(event.userId as `0x${string}`))
-
-                console.log('[onInteractionResponse] Transaction request sent for:', recipient.userId)
-            }
-
-            // Send success message with USD values
-            const ethPrice = await getEthPrice()
-            const totalUsd = parseFloat((tipData.totalAmount * ethPrice).toFixed(2))
-
-            // Check if this is a contribution to payment request
-            const paymentRequestId = (tipData as any).paymentRequestId
-            const contributorId = (tipData as any).contributorId
-            const contributionUsd = (tipData as any).contributionUsd
-
-            if (form.requestId.startsWith('donate-')) {
-                // Donation
-                await handler.sendMessage(event.channelId, `❤️ Thank you for your ~$${totalUsd.toFixed(2)} (${tipData.totalAmount.toFixed(6)} ETH) donation! Your support means everything! 🙏`)
-
-                // Update global stats
-                globalStats.totalDonationsVolume += totalUsd
-                globalStats.totalDonationsCount += 1
-
-                // Update stats and leaderboard
-                updateSenderStats(event.userId, totalUsd, true)
-                // Get user display name from event or stats
-                const displayName = 'User' // TODO: get from event
-                updateLeaderboard(event.userId, displayName, totalUsd, true)
-
-            } else if (form.requestId.startsWith('contrib-')) {
-                // Contribution to payment request
-                const recipient = tipData.recipients[0]
-                await handler.sendMessage(
-                    event.channelId,
-                    `💰 Contributed ~$${totalUsd.toFixed(2)} (${tipData.totalAmount.toFixed(6)} ETH) to <@${recipient.userId}>!`,
-                    { mentions: [{ userId: recipient.userId, displayName: recipient.displayName }] }
-                )
-
-                // Update global stats
-                globalStats.totalCrowdfundingVolume += contributionUsd || totalUsd
-
-                // Update payment request
-                if (paymentRequestId && contributorId !== undefined && contributionUsd) {
-                    const paymentRequest = paymentRequests.get(paymentRequestId)
-                    if (paymentRequest) {
-                        const wasCompleted = paymentRequest.totalCollected >= paymentRequest.amount
-
-                        paymentRequest.contributors.push({
-                            userId: contributorId,
-                            displayName: 'Contributor',
-                            amount: contributionUsd
-                        })
-                        paymentRequest.totalCollected += contributionUsd
-
-                        // Calculate progress
-                        const progress = Math.min(100, (paymentRequest.totalCollected / paymentRequest.amount) * 100)
-                        const progressBar = '▰'.repeat(Math.floor(progress / 10)) + '▱'.repeat(10 - Math.floor(progress / 10))
-
-                        // If goal just reached, increment completed count
-                        const isNowCompleted = paymentRequest.totalCollected >= paymentRequest.amount
-                        if (isNowCompleted && !wasCompleted) {
-                            globalStats.totalCrowdfundingCount += 1
-                        }
-
-                        // Post update message
-                        const updateMessage = progress >= 100
-                            ? `**💰 Payment Request COMPLETED! 🎉**\n\n` +
-                                `**Goal:** $${paymentRequest.amount.toFixed(2)}\n` +
-                                `**Description:** ${paymentRequest.description}\n` +
-                                `**Collected:** $${paymentRequest.totalCollected.toFixed(2)} / $${paymentRequest.amount.toFixed(2)}\n` +
-                                `**Progress:** ${progressBar} ${progress.toFixed(0)}%\n` +
-                                `**Contributors:** ${paymentRequest.contributors.length}\n\n` +
-                                `🎉 **Goal reached! Thank you to all contributors!** 🎉`
-                            : `**💰 Payment Request Updated**\n\n` +
-                                `**Goal:** $${paymentRequest.amount.toFixed(2)}\n` +
-                                `**Description:** ${paymentRequest.description}\n` +
-                                `**Collected:** $${paymentRequest.totalCollected.toFixed(2)} / $${paymentRequest.amount.toFixed(2)}\n` +
-                                `**Progress:** ${progressBar} ${progress.toFixed(0)}%\n` +
-                                `**Contributors:** ${paymentRequest.contributors.length}\n\n` +
-                                `To contribute: \`/contribute ${paymentRequestId} amount\``
-
-                        await handler.sendMessage(paymentRequest.channelId, updateMessage)
-                    }
-                }
-
-                // Update stats
-                updateSenderStats(contributorId || event.userId, contributionUsd || totalUsd, false)
-                updateReceiverStats(recipient.userId, contributionUsd || totalUsd)
-
-            } else if (form.requestId.startsWith('tipsplit-')) {
-                // Tip split
-                const recipientList = tipData.recipients
-                    .map(r => `<@${r.userId}>`)
-                    .join(', ')
-                await handler.sendMessage(
-                    event.channelId,
-                    `💸 Sending ~$${totalUsd.toFixed(2)} (${tipData.totalAmount.toFixed(6)} ETH) split between ${recipientList}!`,
-                    { mentions: tipData.recipients.map(r => ({ userId: r.userId, displayName: r.displayName })) }
-                )
-
-                // Update global stats
-                globalStats.totalTipsVolume += totalUsd
-                globalStats.totalTipsCount += 1
-
-                // Update stats
-                updateSenderStats(event.userId, totalUsd, false)
-                const splitUsd = totalUsd / tipData.recipients.length
-                tipData.recipients.forEach(r => {
-                    updateReceiverStats(r.userId, splitUsd)
-                })
-
-                // Update leaderboard
-                updateLeaderboard(event.userId, 'User', totalUsd, false)
-
-            } else {
-                // Regular tip
-                const recipient = tipData.recipients[0]
-                await handler.sendMessage(
-                    event.channelId,
-                    `💸 Sending ~$${totalUsd.toFixed(2)} (${tipData.totalAmount.toFixed(6)} ETH) to <@${recipient.userId}>!`,
-                    { mentions: [{ userId: recipient.userId, displayName: recipient.displayName }] }
-                )
-
-                // Update global stats
-                globalStats.totalTipsVolume += totalUsd
-                globalStats.totalTipsCount += 1
-
-                // Update stats
-                updateSenderStats(event.userId, totalUsd, false)
-                updateReceiverStats(recipient.userId, totalUsd)
-
-                // Update leaderboard
-                updateLeaderboard(event.userId, 'User', totalUsd, false)
-            }
-
-        } catch (error) {
-            console.error('Error sending transaction:', error)
-            await handler.sendMessage(event.channelId, '❌ Failed to send transaction request. Please try again.')
-        }
+    if (contentCase === 'form') {
+        // Handle button clicks (confirm/cancel)
+        await handleFormResponse(handler, event, pendingTips, getEthPrice)
+    } else if (contentCase === 'transaction') {
+        // Handle transaction confirmations
+        await handleTransactionResponse(handler, event, getEthPrice)
     }
 })
 
@@ -1107,19 +872,60 @@ bot.onTip(async (handler, event) => {
     }
 })
 
-const app = bot.start()
+// Initialize database before starting bot
+async function startBot() {
+    try {
+        console.log('[Bot] Initializing database...')
+        await initDatabase()
 
-// Health check route
-app.get('/', (c) => c.text('TipsoBot is running! 💸'))
+        console.log('[Bot] Starting bot...')
+        const app = bot.start()
 
-// Webhook route for Towns
-app.post('/webhook', async (c) => {
-  // Get the webhook body
-  const body = await c.req.json()
-  console.log('Webhook received:', body)
+        // Health check route
+        app.get('/', (c) => c.text('TipsoBot is running! 💸'))
 
-  // Return 200 so Towns knows we received it
-  return c.json({ ok: true }, 200)
-})
+        // Webhook route for Towns
+        app.post('/webhook', async (c) => {
+            // Get the webhook body
+            const body = await c.req.json()
+            console.log('Webhook received:', body)
 
-export default app
+            // Return 200 so Towns knows we received it
+            return c.json({ ok: true }, 200)
+        })
+
+        // Cleanup old pending transactions every hour
+        setInterval(async () => {
+            try {
+                console.log('[Cleanup] Running cleanup of old pending transactions...')
+                await cleanupOldTransactions()
+            } catch (error) {
+                console.error('[Cleanup] Error:', error)
+            }
+        }, 60 * 60 * 1000) // 1 hour
+
+        // Graceful shutdown
+        const shutdown = async (signal: string) => {
+            console.log(`\n[Bot] Received ${signal}, shutting down gracefully...`)
+            try {
+                await closeDatabase()
+                console.log('[Bot] Database connection closed')
+                process.exit(0)
+            } catch (error) {
+                console.error('[Bot] Error during shutdown:', error)
+                process.exit(1)
+            }
+        }
+
+        process.on('SIGTERM', () => shutdown('SIGTERM'))
+        process.on('SIGINT', () => shutdown('SIGINT'))
+
+        console.log('[Bot] Bot started successfully!')
+        return app
+    } catch (error) {
+        console.error('[Bot] Fatal error during startup:', error)
+        process.exit(1)
+    }
+}
+
+export default startBot()
