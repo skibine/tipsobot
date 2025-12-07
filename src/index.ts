@@ -28,6 +28,25 @@ interface UserStats {
 
 const userStats = new Map<string, UserStats>()
 
+// Global bot statistics (across all channels)
+interface GlobalStats {
+    totalTipsVolume: number // Total USD volume of all tips
+    totalTipsCount: number // Number of tip transactions
+    totalDonationsVolume: number // Total USD donated to bot
+    totalDonationsCount: number // Number of donations
+    totalCrowdfundingVolume: number // Total USD raised via payment requests
+    totalCrowdfundingCount: number // Number of completed payment requests
+}
+
+const globalStats: GlobalStats = {
+    totalTipsVolume: 0,
+    totalTipsCount: 0,
+    totalDonationsVolume: 0,
+    totalDonationsCount: 0,
+    totalCrowdfundingVolume: 0,
+    totalCrowdfundingCount: 0
+}
+
 // Leaderboard data
 interface LeaderboardEntry {
     userId: string
@@ -50,9 +69,11 @@ interface PaymentRequest {
     totalCollected: number
     channelId: string
     createdAt: Date
+    lastProgressMessageId?: string // Store last progress message ID for deletion
 }
 
 const paymentRequests = new Map<string, PaymentRequest>()
+
 
 // Helper functions for stats
 function getOrCreateStats(userId: string): UserStats {
@@ -117,7 +138,19 @@ async function getEthPrice(): Promise<number> {
     try {
         // Fetch from CoinGecko API (free, no auth required)
         const response = await fetch('https://api.coingecko.com/api/v3/simple/price?ids=ethereum&vs_currencies=usd')
+
+        if (!response.ok) {
+            throw new Error(`CoinGecko API returned status ${response.status}`)
+        }
+
         const data = await response.json()
+
+        // Validate response structure
+        if (!data || !data.ethereum || typeof data.ethereum.usd !== 'number') {
+            console.error('[getEthPrice] Invalid API response structure:', JSON.stringify(data))
+            throw new Error('Invalid API response structure')
+        }
+
         const price = data.ethereum.usd
 
         console.log('[getEthPrice] Fetched new price:', price)
@@ -606,26 +639,30 @@ bot.onSlashCommand('donate', async (handler, event) => {
     }
 })
 
-// /stats - personal statistics
+// /stats - global bot statistics
 bot.onSlashCommand('stats', async (handler, event) => {
-    const { userId, channelId } = event
-    const stats = getOrCreateStats(userId)
+    const { channelId } = event
 
     const ethPrice = await getEthPrice()
-    const sentEth = stats.totalSent / ethPrice
-    const receivedEth = stats.totalReceived / ethPrice
+    const tipsEth = globalStats.totalTipsVolume / ethPrice
+    const donationsEth = globalStats.totalDonationsVolume / ethPrice
+    const crowdfundingEth = globalStats.totalCrowdfundingVolume / ethPrice
+    const totalEth = (globalStats.totalTipsVolume + globalStats.totalDonationsVolume + globalStats.totalCrowdfundingVolume) / ethPrice
 
     await handler.sendMessage(
         channelId,
-        `**Your Tipping Statistics** 📊\n\n` +
-            `**Sent:**\n` +
-            `• Total: $${stats.totalSent.toFixed(2)} (~${sentEth.toFixed(6)} ETH)\n` +
-            `• Tips sent: ${stats.tipsSent}\n` +
-            `• Donations: ${stats.donations}\n\n` +
-            `**Received:**\n` +
-            `• Total: $${stats.totalReceived.toFixed(2)} (~${receivedEth.toFixed(6)} ETH)\n` +
-            `• Tips received: ${stats.tipsReceived}\n\n` +
-            `Use \`/leaderboard\` to see top tippers! 🏆`
+        `**📊 TipsoBot Statistics**\n\n` +
+            `**💸 Tips:**\n` +
+            `• Volume: $${globalStats.totalTipsVolume.toFixed(2)} (~${tipsEth.toFixed(6)} ETH)\n` +
+            `• Count: ${globalStats.totalTipsCount} transactions\n\n` +
+            `**❤️ Donations to Bot:**\n` +
+            `• Volume: $${globalStats.totalDonationsVolume.toFixed(2)} (~${donationsEth.toFixed(6)} ETH)\n` +
+            `• Count: ${globalStats.totalDonationsCount} donations\n\n` +
+            `**💰 Crowdfunding:**\n` +
+            `• Volume: $${globalStats.totalCrowdfundingVolume.toFixed(2)} (~${crowdfundingEth.toFixed(6)} ETH)\n` +
+            `• Requests: ${globalStats.totalCrowdfundingCount} funded\n\n` +
+            `**🌐 Total Volume:** $${(globalStats.totalTipsVolume + globalStats.totalDonationsVolume + globalStats.totalCrowdfundingVolume).toFixed(2)} (~${totalEth.toFixed(6)} ETH)\n\n` +
+            `Use \`/leaderboard\` to see top contributors! 🏆`
     )
 })
 
@@ -799,22 +836,22 @@ bot.onSlashCommand('contribute', async (handler, event) => {
             return
         }
 
-        // Store pending contribution
+        // Store pending contribution with all tracking data
         const contributionId = `contrib-${eventId}`
-        pendingTips.set(contributionId, {
+        const contributionData = {
             recipients: [{
                 userId: paymentRequest.creatorId,
                 displayName: paymentRequest.creatorName,
                 wallet: creatorWallet as `0x${string}`,
                 amount: ethAmount
             }],
-            totalAmount: ethAmount
-        })
+            totalAmount: ethAmount,
+            paymentRequestId: requestId,
+            contributorId: userId,
+            contributionUsd: amount
+        } as any
 
-        // Store request ID in the contribution for later tracking
-        (pendingTips.get(contributionId) as any).paymentRequestId = requestId
-        (pendingTips.get(contributionId) as any).contributorId = userId
-        (pendingTips.get(contributionId) as any).contributionUsd = amount
+        pendingTips.set(contributionId, contributionData)
 
         console.log('[/contribute] Sending confirmation for contribution to:', requestId)
 
@@ -930,6 +967,10 @@ bot.onInteractionResponse(async (handler, event) => {
                 // Donation
                 await handler.sendMessage(event.channelId, `❤️ Thank you for your ~$${totalUsd.toFixed(2)} (${tipData.totalAmount.toFixed(6)} ETH) donation! Your support means everything! 🙏`)
 
+                // Update global stats
+                globalStats.totalDonationsVolume += totalUsd
+                globalStats.totalDonationsCount += 1
+
                 // Update stats and leaderboard
                 updateSenderStats(event.userId, totalUsd, true)
                 // Get user display name from event or stats
@@ -945,10 +986,15 @@ bot.onInteractionResponse(async (handler, event) => {
                     { mentions: [{ userId: recipient.userId, displayName: recipient.displayName }] }
                 )
 
+                // Update global stats
+                globalStats.totalCrowdfundingVolume += contributionUsd || totalUsd
+
                 // Update payment request
                 if (paymentRequestId && contributorId !== undefined && contributionUsd) {
                     const paymentRequest = paymentRequests.get(paymentRequestId)
                     if (paymentRequest) {
+                        const wasCompleted = paymentRequest.totalCollected >= paymentRequest.amount
+
                         paymentRequest.contributors.push({
                             userId: contributorId,
                             displayName: 'Contributor',
@@ -960,17 +1006,30 @@ bot.onInteractionResponse(async (handler, event) => {
                         const progress = Math.min(100, (paymentRequest.totalCollected / paymentRequest.amount) * 100)
                         const progressBar = '▰'.repeat(Math.floor(progress / 10)) + '▱'.repeat(10 - Math.floor(progress / 10))
 
+                        // If goal just reached, increment completed count
+                        const isNowCompleted = paymentRequest.totalCollected >= paymentRequest.amount
+                        if (isNowCompleted && !wasCompleted) {
+                            globalStats.totalCrowdfundingCount += 1
+                        }
+
                         // Post update message
-                        await handler.sendMessage(
-                            paymentRequest.channelId,
-                            `**💰 Payment Request Updated**\n\n` +
+                        const updateMessage = progress >= 100
+                            ? `**💰 Payment Request COMPLETED! 🎉**\n\n` +
                                 `**Goal:** $${paymentRequest.amount.toFixed(2)}\n` +
                                 `**Description:** ${paymentRequest.description}\n` +
                                 `**Collected:** $${paymentRequest.totalCollected.toFixed(2)} / $${paymentRequest.amount.toFixed(2)}\n` +
                                 `**Progress:** ${progressBar} ${progress.toFixed(0)}%\n` +
                                 `**Contributors:** ${paymentRequest.contributors.length}\n\n` +
-                                `${progress >= 100 ? '🎉 **Goal reached!**' : `To contribute: \`/contribute ${paymentRequestId} amount\``}`
-                        )
+                                `🎉 **Goal reached! Thank you to all contributors!** 🎉`
+                            : `**💰 Payment Request Updated**\n\n` +
+                                `**Goal:** $${paymentRequest.amount.toFixed(2)}\n` +
+                                `**Description:** ${paymentRequest.description}\n` +
+                                `**Collected:** $${paymentRequest.totalCollected.toFixed(2)} / $${paymentRequest.amount.toFixed(2)}\n` +
+                                `**Progress:** ${progressBar} ${progress.toFixed(0)}%\n` +
+                                `**Contributors:** ${paymentRequest.contributors.length}\n\n` +
+                                `To contribute: \`/contribute ${paymentRequestId} amount\``
+
+                        await handler.sendMessage(paymentRequest.channelId, updateMessage)
                     }
                 }
 
@@ -988,6 +1047,10 @@ bot.onInteractionResponse(async (handler, event) => {
                     `💸 Sending ~$${totalUsd.toFixed(2)} (${tipData.totalAmount.toFixed(6)} ETH) split between ${recipientList}!`,
                     { mentions: tipData.recipients.map(r => ({ userId: r.userId, displayName: r.displayName })) }
                 )
+
+                // Update global stats
+                globalStats.totalTipsVolume += totalUsd
+                globalStats.totalTipsCount += 1
 
                 // Update stats
                 updateSenderStats(event.userId, totalUsd, false)
@@ -1007,6 +1070,10 @@ bot.onInteractionResponse(async (handler, event) => {
                     `💸 Sending ~$${totalUsd.toFixed(2)} (${tipData.totalAmount.toFixed(6)} ETH) to <@${recipient.userId}>!`,
                     { mentions: [{ userId: recipient.userId, displayName: recipient.displayName }] }
                 )
+
+                // Update global stats
+                globalStats.totalTipsVolume += totalUsd
+                globalStats.totalTipsCount += 1
 
                 // Update stats
                 updateSenderStats(event.userId, totalUsd, false)
