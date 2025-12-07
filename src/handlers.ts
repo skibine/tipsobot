@@ -213,7 +213,7 @@ export async function handleTransactionResponse(
             })
 
             // Update user stats
-            await upsertUserStats(data.contributorId, 'Contributor', {
+            await upsertUserStats(data.contributorId, data.contributorId, {
                 sentAmount: data.contributionUsd,
                 tipsSent: 1
             })
@@ -225,8 +225,11 @@ export async function handleTransactionResponse(
             // Send success message
             await handler.sendMessage(
                 data.channelId,
-                `✅ Contribution confirmed! ~$${data.contributionUsd.toFixed(2)} sent to <@${data.creatorId}>`,
-                { mentions: [{ userId: data.creatorId, displayName: data.creatorName }] }
+                `✅ <@${data.contributorId}> contributed ~$${data.contributionUsd.toFixed(2)} to <@${data.creatorId}>!`,
+                { mentions: [
+                    { userId: data.contributorId, displayName: data.contributorId },
+                    { userId: data.creatorId, displayName: data.creatorName }
+                ] }
             )
 
             // Get updated payment request
@@ -276,7 +279,7 @@ export async function handleTransactionResponse(
             })
 
             // Update user stats
-            await upsertUserStats(pendingTx.userId, 'User', {
+            await upsertUserStats(pendingTx.userId, pendingTx.userId, {
                 sentAmount: data.usdAmount,
                 tipsSent: 1
             })
@@ -288,8 +291,11 @@ export async function handleTransactionResponse(
             // Send success message
             await handler.sendMessage(
                 data.channelId,
-                `💸 Sending ~$${data.usdAmount.toFixed(2)} (${data.ethAmount.toFixed(6)} ETH) to <@${data.recipientId}>!`,
-                { mentions: [{ userId: data.recipientId, displayName: data.recipientName }] }
+                `💸 <@${pendingTx.userId}> sent ~$${data.usdAmount.toFixed(2)} (${data.ethAmount.toFixed(6)} ETH) to <@${data.recipientId}>!`,
+                { mentions: [
+                    { userId: pendingTx.userId, displayName: pendingTx.userId },
+                    { userId: data.recipientId, displayName: data.recipientName }
+                ] }
             )
 
             // Clean up
@@ -312,7 +318,7 @@ export async function handleTransactionResponse(
             })
 
             // Update user stats
-            await upsertUserStats(pendingTx.userId, 'User', {
+            await upsertUserStats(pendingTx.userId, pendingTx.userId, {
                 sentAmount: data.totalUsd,
                 tipsSent: 1
             })
@@ -327,11 +333,14 @@ export async function handleTransactionResponse(
 
             // Send success message
             const recipientList = data.recipients.map((r: any) => `<@${r.userId}>`).join(', ')
-            const mentions = data.recipients.map((r: any) => ({ userId: r.userId, displayName: r.displayName }))
+            const mentions = [
+                { userId: pendingTx.userId, displayName: pendingTx.userId },
+                ...data.recipients.map((r: any) => ({ userId: r.userId, displayName: r.displayName }))
+            ]
 
             await handler.sendMessage(
                 data.channelId,
-                `💸 Sending ~$${data.totalUsd.toFixed(2)} (${data.totalEth.toFixed(6)} ETH) split between ${recipientList}!`,
+                `💸 <@${pendingTx.userId}> sent ~$${data.totalUsd.toFixed(2)} (${data.totalEth.toFixed(6)} ETH) split between ${recipientList}!`,
                 { mentions }
             )
 
@@ -355,7 +364,7 @@ export async function handleTransactionResponse(
             })
 
             // Update user stats
-            await upsertUserStats(pendingTx.userId, 'User', {
+            await upsertUserStats(pendingTx.userId, pendingTx.userId, {
                 sentAmount: data.usdAmount,
                 donations: 1
             })
@@ -363,7 +372,8 @@ export async function handleTransactionResponse(
             // Send success message
             await handler.sendMessage(
                 data.channelId,
-                `❤️ Thank you for your ~$${data.usdAmount.toFixed(2)} (${data.ethAmount.toFixed(6)} ETH) donation! Your support means everything! 🙏`
+                `❤️ Thank you <@${pendingTx.userId}> for your ~$${data.usdAmount.toFixed(2)} (${data.ethAmount.toFixed(6)} ETH) donation! Your support means everything! 🙏`,
+                { mentions: [{ userId: pendingTx.userId, displayName: pendingTx.userId }] }
             )
 
             // Clean up
