@@ -13,15 +13,15 @@ const commands = [
     },
     {
         name: 'tip',
-        description: 'Tip a user with ETH',
+        description: 'Tip a user in USD (auto-converted to ETH)',
     },
     {
         name: 'tipsplit',
-        description: 'Split ETH tip between multiple users',
+        description: 'Split USD tip between multiple users',
     },
     {
         name: 'donate',
-        description: 'Donate ETH to support the bot',
+        description: 'Donate in USD to support the bot',
     },
 ] as const satisfies BotCommand[]
 
