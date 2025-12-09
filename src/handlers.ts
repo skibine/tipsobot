@@ -13,159 +13,6 @@ import {
     getContributions
 } from './db'
 
-// Handle form responses (button clicks)
-export async function handleFormResponse(
-    handler: BotHandler,
-    event: any,
-    getEthPrice: () => Promise<number>
-) {
-    const form = event.response.payload.content.value
-
-    // Log event structure to understand what we have
-    console.log('[Form Response] Event structure:', {
-        eventId: event.eventId,
-        userId: event.userId,
-        spaceId: event.spaceId,
-        channelId: event.channelId,
-        refEventId: event.refEventId,
-        responseKeys: Object.keys(event.response || {}),
-        requestId: form.requestId
-    })
-
-    // Check which button was clicked
-    const clickedButton = form.components.find((c: any) => c.component.case === 'button')
-    console.log('[Form Response] Button clicked:', clickedButton?.id, 'Request ID:', form.requestId)
-
-    if (!clickedButton) return
-
-    if (clickedButton.id === 'cancel') {
-        // Clean up pending transaction from database
-        await deletePendingTransaction(form.requestId)
-        await handler.sendMessage(event.channelId, '❌ Cancelled.')
-        return
-    }
-
-    if (clickedButton.id === 'confirm') {
-        try {
-            // Get pending transaction from database
-            const pendingTx = await getPendingTransaction(form.requestId)
-            if (!pendingTx) {
-                console.error('[Form Response] No pending transaction found for:', form.requestId)
-                return
-            }
-
-            const data = pendingTx.data
-            const ethPrice = await getEthPrice()
-
-            // Handle different transaction types
-            if (form.requestId.startsWith('contrib-')) {
-                // Contribution
-                const amountWei = parseEther(data.ethAmount.toString())
-                const usdValue = data.contributionUsd.toFixed(2)
-
-                await handler.sendInteractionRequest(event.channelId, {
-                    case: 'transaction',
-                    value: {
-                        id: `tx-${form.requestId}`,
-                        title: `Send ~$${usdValue}`,
-                        description: `Transfer ~$${usdValue} (${data.ethAmount.toFixed(6)} ETH) on Base\n\nTo: ${data.creatorWallet.slice(0, 6)}...${data.creatorWallet.slice(-4)}\n\n⚠️ Make sure you have enough ETH for the transfer plus gas (~$0.01)`,
-                        content: {
-                            case: 'evm',
-                            value: {
-                                chainId: '8453',
-                                to: data.creatorWallet,
-                                value: amountWei.toString(),
-                                data: '0x',
-                                signerWallet: undefined
-                            }
-                        }
-                    }
-                }, hexToBytes(event.userId as `0x${string}`))
-
-            } else if (form.requestId.startsWith('tip-')) {
-                // Regular tip
-                const amountWei = parseEther(data.ethAmount.toString())
-                const usdValue = data.usdAmount.toFixed(2)
-
-                await handler.sendInteractionRequest(event.channelId, {
-                    case: 'transaction',
-                    value: {
-                        id: `tx-${form.requestId}`,
-                        title: `Send ~$${usdValue}`,
-                        description: `Transfer ~$${usdValue} (${data.ethAmount.toFixed(6)} ETH) on Base\n\nTo: ${data.recipientWallet.slice(0, 6)}...${data.recipientWallet.slice(-4)}\n\n⚠️ Make sure you have enough ETH for the transfer plus gas (~$0.01)`,
-                        content: {
-                            case: 'evm',
-                            value: {
-                                chainId: '8453',
-                                to: data.recipientWallet,
-                                value: amountWei.toString(),
-                                data: '0x',
-                                signerWallet: undefined
-                            }
-                        }
-                    }
-                }, hexToBytes(event.userId as `0x${string}`))
-
-            } else if (form.requestId.startsWith('tipsplit-')) {
-                // Tip split - send multiple transactions
-                for (const recipient of data.recipients) {
-                    const amountWei = parseEther(recipient.ethAmount.toString())
-                    const usdValue = recipient.usdAmount.toFixed(2)
-
-                    await handler.sendInteractionRequest(event.channelId, {
-                        case: 'transaction',
-                        value: {
-                            id: `tx-${form.requestId}-${recipient.userId}`,
-                            title: `Send ~$${usdValue}`,
-                            description: `Transfer ~$${usdValue} (${recipient.ethAmount.toFixed(6)} ETH) on Base\n\nTo: ${recipient.wallet.slice(0, 6)}...${recipient.wallet.slice(-4)}\n\n⚠️ Make sure you have enough ETH for the transfer plus gas (~$0.01)`,
-                            content: {
-                                case: 'evm',
-                                value: {
-                                    chainId: '8453',
-                                    to: recipient.wallet,
-                                    value: amountWei.toString(),
-                                    data: '0x',
-                                    signerWallet: undefined
-                                }
-                            }
-                        }
-                    }, hexToBytes(event.userId as `0x${string}`))
-                }
-
-            } else if (form.requestId.startsWith('donate-')) {
-                // Donation
-                const amountWei = parseEther(data.ethAmount.toString())
-                const usdValue = data.usdAmount.toFixed(2)
-
-                await handler.sendInteractionRequest(event.channelId, {
-                    case: 'transaction',
-                    value: {
-                        id: `tx-${form.requestId}`,
-                        title: `Send ~$${usdValue}`,
-                        description: `Donate ~$${usdValue} (${data.ethAmount.toFixed(6)} ETH) to TipsoBot\n\nYour support is appreciated! 🙏\n\n⚠️ Make sure you have enough ETH for the transfer plus gas (~$0.01)`,
-                        content: {
-                            case: 'evm',
-                            value: {
-                                chainId: '8453',
-                                to: data.botAddress,
-                                value: amountWei.toString(),
-                                data: '0x',
-                                signerWallet: undefined
-                            }
-                        }
-                    }
-                }, hexToBytes(event.userId as `0x${string}`))
-            }
-
-            console.log('[Form Response] Transaction request sent')
-
-        } catch (error) {
-            console.error('[Form Response] Error:', error)
-            await handler.sendMessage(event.channelId, '❌ Failed to send transaction request. Please try again.')
-        }
-    }
-}
-
 // Handle transaction responses (actual blockchain transactions)
 export async function handleTransactionResponse(
     handler: BotHandler,
@@ -231,10 +78,6 @@ export async function handleTransactionResponse(
             console.log('[Transaction Response] Status is:', pendingTx.status)
             return
         }
-
-        // Get channel and message info for updating the form
-        const channelId = pendingTx.channelId
-        const messageId = pendingTx.messageId
 
         // Handle contribution (stored in database)
         if (originalRequestId.startsWith('contrib-')) {
@@ -313,19 +156,8 @@ export async function handleTransactionResponse(
             }
 
             // 🔑 KEY FIX: Mark as processed but DON'T delete (keep for 7 days)
-            console.log('[Transaction Response] Marking as processed (keeping in DB for 7 days)')
+            console.log('[Transaction Response] Marking as processed (keeping in DB for 7 days for duplicate detection)')
             await updatePendingTransactionStatus(originalRequestId, 'processed')
-            // 🚫 DO NOT DELETE - we keep it for duplicate detection
-            
-            // 🛑 NEW: Delete the confirmation message to prevent re-clicking
-            try {
-                if (messageId && messageId !== event.eventId) {
-                    await handler.deleteMessage(channelId, messageId)
-                    console.log('[Transaction Response] Deleted confirmation message to prevent duplicates')
-                }
-            } catch (deleteError) {
-                console.log('[Transaction Response] Could not delete message (not critical):', deleteError)
-            }
             
             console.log('[Transaction Response] ✅ Contribution successfully processed!')
 
@@ -360,19 +192,9 @@ export async function handleTransactionResponse(
                 ] }
             )
 
-            // 🔑 KEY FIX: Mark as processed but DON'T delete
-            console.log('[Transaction Response] Marking as processed (keeping in DB for 7 days)')
+            // 🔑 KEY FIX: Mark as processed but DON'T delete (keep for 7 days)
+            console.log('[Transaction Response] Marking as processed (keeping in DB for 7 days for duplicate detection)')
             await updatePendingTransactionStatus(originalRequestId, 'processed')
-            
-            // 🛑 NEW: Delete the confirmation message
-            try {
-                if (messageId && messageId !== event.eventId) {
-                    await handler.deleteMessage(channelId, messageId)
-                    console.log('[Transaction Response] Deleted confirmation message to prevent duplicates')
-                }
-            } catch (deleteError) {
-                console.log('[Transaction Response] Could not delete message (not critical):', deleteError)
-            }
             
             console.log('[Transaction Response] ✅ Tip successfully processed!')
 
@@ -435,19 +257,9 @@ export async function handleTransactionResponse(
                     { mentions }
                 )
 
-                // 🔑 KEY FIX: Mark as processed but DON'T delete
-                console.log('[Transaction Response] Marking tipsplit as processed (keeping in DB for 7 days)')
+                // 🔑 KEY FIX: Mark as processed but DON'T delete (keep for 7 days)
+                console.log('[Transaction Response] Marking tipsplit as processed (keeping in DB for 7 days for duplicate detection)')
                 await updatePendingTransactionStatus(originalRequestId, 'processed')
-                
-                // 🛑 NEW: Delete the confirmation message
-                try {
-                    if (messageId && messageId !== event.eventId) {
-                        await handler.deleteMessage(channelId, messageId)
-                        console.log('[Transaction Response] Deleted confirmation message to prevent duplicates')
-                    }
-                } catch (deleteError) {
-                    console.log('[Transaction Response] Could not delete message (not critical):', deleteError)
-                }
                 
                 console.log('[Transaction Response] ✅ Tipsplit successfully processed!')
             }
@@ -477,18 +289,8 @@ export async function handleTransactionResponse(
             )
 
             // 🔑 KEY FIX: Mark as processed but DON'T delete (keep for 7 days)
-            console.log('[Transaction Response] Marking donation as processed (keeping in DB for 7 days)')
+            console.log('[Transaction Response] Marking donation as processed (keeping in DB for 7 days for duplicate detection)')
             await updatePendingTransactionStatus(originalRequestId, 'processed')
-            
-            // 🛑 NEW: Delete the confirmation message to prevent re-clicking
-            try {
-                if (messageId && messageId !== event.eventId) {
-                    await handler.deleteMessage(channelId, messageId)
-                    console.log('[Transaction Response] Deleted confirmation message to prevent duplicates')
-                }
-            } catch (deleteError) {
-                console.log('[Transaction Response] Could not delete message (not critical):', deleteError)
-            }
             
             console.log('[Transaction Response] ✅ Donation successfully processed!')
 
@@ -497,6 +299,21 @@ export async function handleTransactionResponse(
         }
 
     } catch (error) {
-        console.error('[Transaction Response] 🗑 CRITICAL ERROR:', error)
+        console.error('[Transaction Response] 🔥 CRITICAL ERROR:', error)
     }
+}
+
+// Handle form responses (button clicks)
+// NOTE: For now, we're NOT using form-based confirmations to avoid the Towns cache issue.
+// Instead, transactions are sent directly via handler.sendInteractionRequest()
+// This prevents users from clicking cached buttons after page refresh.
+export async function handleFormResponse(
+    handler: BotHandler,
+    event: any,
+    getEthPrice: () => Promise<number>
+) {
+    // This handler is kept for backwards compatibility but is not actively used
+    // All new transaction flows send directly to blockchain without a confirmation form
+    console.log('[Form Response] Form responses are deprecated - using direct transaction flow')
+    return
 }
