@@ -291,12 +291,20 @@ export async function getRemainingCooldown(spaceId: string, userId: string, comm
 }
 
 // Pending Transactions Functions (per space/town)
-export async function savePendingTransaction(spaceId: string, id: string, type: string, userId: string, data: any) {
+export async function savePendingTransaction(
+    spaceId: string,
+    id: string,
+    type: string,
+    userId: string,
+    data: any,
+    messageId?: string,
+    channelId?: string
+) {
     await pool.query(
-        `INSERT INTO pending_transactions (space_id, id, type, user_id, data)
-         VALUES ($1, $2, $3, $4, $5)
-         ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data`,
-        [spaceId, id, type, userId, JSON.stringify(data)]
+        `INSERT INTO pending_transactions (space_id, id, type, user_id, data, message_id, channel_id, status)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, 'pending')
+         ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data, message_id = EXCLUDED.message_id, channel_id = EXCLUDED.channel_id`,
+        [spaceId, id, type, userId, JSON.stringify(data), messageId || null, channelId || null]
     )
 }
 
@@ -312,7 +320,10 @@ export async function getPendingTransaction(id: string) {
         spaceId: row.space_id,
         type: row.type,
         userId: row.user_id,
-        data: row.data,
+        data: typeof row.data === 'string' ? JSON.parse(row.data) : row.data,
+        messageId: row.message_id,
+        channelId: row.channel_id,
+        status: row.status,
         createdAt: row.created_at
     }
 }
@@ -321,6 +332,13 @@ export async function updatePendingTransaction(id: string, data: any) {
     await pool.query(
         'UPDATE pending_transactions SET data = $1 WHERE id = $2',
         [JSON.stringify(data), id]
+    )
+}
+
+export async function updatePendingTransactionStatus(id: string, status: 'pending' | 'processed' | 'failed') {
+    await pool.query(
+        'UPDATE pending_transactions SET status = $1 WHERE id = $2',
+        [status, id]
     )
 }
 
