@@ -218,7 +218,7 @@ export async function handleTransactionResponse(
             return
         }
 
-        // ✨ KEY FIX: Check if already processed (not just pending)
+        // 🔑 KEY FIX: Check if already processed (not just pending)
         if (pendingTx.status === 'processed') {
             console.log('[Transaction Response] 🛑 DUPLICATE! Transaction already processed:', originalRequestId)
             console.log('[Transaction Response] Ignoring this duplicate callback')
@@ -312,10 +312,21 @@ export async function handleTransactionResponse(
                 await handler.sendMessage(paymentRequest.channel_id, updateMessage)
             }
 
-            // ✨ KEY FIX: Mark as processed but DON'T delete (keep for 7 days)
+            // 🔑 KEY FIX: Mark as processed but DON'T delete (keep for 7 days)
             console.log('[Transaction Response] Marking as processed (keeping in DB for 7 days)')
             await updatePendingTransactionStatus(originalRequestId, 'processed')
-            // ❌ NO: await deletePendingTransaction(originalRequestId)
+            // 🚫 DO NOT DELETE - we keep it for duplicate detection
+            
+            // 🛑 NEW: Delete the confirmation message to prevent re-clicking
+            try {
+                if (messageId && messageId !== event.eventId) {
+                    await handler.deleteMessage(channelId, messageId)
+                    console.log('[Transaction Response] Deleted confirmation message to prevent duplicates')
+                }
+            } catch (deleteError) {
+                console.log('[Transaction Response] Could not delete message (not critical):', deleteError)
+            }
+            
             console.log('[Transaction Response] ✅ Contribution successfully processed!')
 
         } else if (originalRequestId.startsWith('tip-')) {
@@ -349,10 +360,20 @@ export async function handleTransactionResponse(
                 ] }
             )
 
-            // ✨ KEY FIX: Mark as processed but DON'T delete
+            // 🔑 KEY FIX: Mark as processed but DON'T delete
             console.log('[Transaction Response] Marking as processed (keeping in DB for 7 days)')
             await updatePendingTransactionStatus(originalRequestId, 'processed')
-            // ❌ NO: await deletePendingTransaction(originalRequestId)
+            
+            // 🛑 NEW: Delete the confirmation message
+            try {
+                if (messageId && messageId !== event.eventId) {
+                    await handler.deleteMessage(channelId, messageId)
+                    console.log('[Transaction Response] Deleted confirmation message to prevent duplicates')
+                }
+            } catch (deleteError) {
+                console.log('[Transaction Response] Could not delete message (not critical):', deleteError)
+            }
+            
             console.log('[Transaction Response] ✅ Tip successfully processed!')
 
         } else if (originalRequestId.startsWith('tipsplit-')) {
@@ -414,10 +435,20 @@ export async function handleTransactionResponse(
                     { mentions }
                 )
 
-                // ✨ KEY FIX: Mark as processed but DON'T delete
+                // 🔑 KEY FIX: Mark as processed but DON'T delete
                 console.log('[Transaction Response] Marking tipsplit as processed (keeping in DB for 7 days)')
                 await updatePendingTransactionStatus(originalRequestId, 'processed')
-                // ❌ NO: await deletePendingTransaction(originalRequestId)
+                
+                // 🛑 NEW: Delete the confirmation message
+                try {
+                    if (messageId && messageId !== event.eventId) {
+                        await handler.deleteMessage(channelId, messageId)
+                        console.log('[Transaction Response] Deleted confirmation message to prevent duplicates')
+                    }
+                } catch (deleteError) {
+                    console.log('[Transaction Response] Could not delete message (not critical):', deleteError)
+                }
+                
                 console.log('[Transaction Response] ✅ Tipsplit successfully processed!')
             }
 
@@ -445,10 +476,20 @@ export async function handleTransactionResponse(
                 { mentions: [{ userId: pendingTx.userId, displayName: pendingTx.userId }] }
             )
 
-            // ✨ KEY FIX: Mark as processed but DON'T delete (keep for 7 days)
+            // 🔑 KEY FIX: Mark as processed but DON'T delete (keep for 7 days)
             console.log('[Transaction Response] Marking donation as processed (keeping in DB for 7 days)')
             await updatePendingTransactionStatus(originalRequestId, 'processed')
-            // ❌ NO: await deletePendingTransaction(originalRequestId)
+            
+            // 🛑 NEW: Delete the confirmation message to prevent re-clicking
+            try {
+                if (messageId && messageId !== event.eventId) {
+                    await handler.deleteMessage(channelId, messageId)
+                    console.log('[Transaction Response] Deleted confirmation message to prevent duplicates')
+                }
+            } catch (deleteError) {
+                console.log('[Transaction Response] Could not delete message (not critical):', deleteError)
+            }
+            
             console.log('[Transaction Response] ✅ Donation successfully processed!')
 
         } else {
