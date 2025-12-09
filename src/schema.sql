@@ -1,8 +1,8 @@
 -- TipsoBot PostgreSQL Schema
 
--- Global bot statistics (single row table)
+-- Global bot statistics (per space/town)
 CREATE TABLE IF NOT EXISTS global_stats (
-    id INTEGER PRIMARY KEY DEFAULT 1,
+    space_id VARCHAR(100) NOT NULL,
     total_tips_volume DECIMAL(20, 2) DEFAULT 0,
     total_tips_count INTEGER DEFAULT 0,
     total_donations_volume DECIMAL(20, 2) DEFAULT 0,
@@ -10,27 +10,27 @@ CREATE TABLE IF NOT EXISTS global_stats (
     total_crowdfunding_volume DECIMAL(20, 2) DEFAULT 0,
     total_crowdfunding_count INTEGER DEFAULT 0,
     updated_at TIMESTAMP DEFAULT NOW(),
-    CONSTRAINT single_row CHECK (id = 1)
+    PRIMARY KEY (space_id)
 );
 
--- Initialize global stats with default values
-INSERT INTO global_stats (id) VALUES (1) ON CONFLICT DO NOTHING;
-
--- User statistics
+-- User statistics (per space/town)
 CREATE TABLE IF NOT EXISTS user_stats (
-    user_id VARCHAR(66) PRIMARY KEY, -- Ethereum address (0x...)
+    space_id VARCHAR(100) NOT NULL,
+    user_id VARCHAR(66) NOT NULL,
     total_sent DECIMAL(20, 2) DEFAULT 0,
     total_received DECIMAL(20, 2) DEFAULT 0,
     tips_sent INTEGER DEFAULT 0,
     tips_received INTEGER DEFAULT 0,
     donations INTEGER DEFAULT 0,
     display_name VARCHAR(255),
-    updated_at TIMESTAMP DEFAULT NOW()
+    updated_at TIMESTAMP DEFAULT NOW(),
+    PRIMARY KEY (space_id, user_id)
 );
 
 -- Payment requests for crowdfunding
 CREATE TABLE IF NOT EXISTS payment_requests (
     id VARCHAR(100) PRIMARY KEY,
+    space_id VARCHAR(100) NOT NULL,
     creator_id VARCHAR(66) NOT NULL,
     creator_name VARCHAR(255) NOT NULL,
     amount DECIMAL(20, 2) NOT NULL,
@@ -54,15 +54,17 @@ CREATE TABLE IF NOT EXISTS contributions (
 
 -- User cooldowns for rate limiting
 CREATE TABLE IF NOT EXISTS user_cooldowns (
+    space_id VARCHAR(100) NOT NULL,
     user_id VARCHAR(66) NOT NULL,
     command VARCHAR(50) NOT NULL,
     last_used TIMESTAMP NOT NULL,
-    PRIMARY KEY (user_id, command)
+    PRIMARY KEY (space_id, user_id, command)
 );
 
 -- Pending transactions (waiting for confirmation)
 CREATE TABLE IF NOT EXISTS pending_transactions (
     id VARCHAR(100) PRIMARY KEY,
+    space_id VARCHAR(100) NOT NULL,
     type VARCHAR(20) NOT NULL, -- 'tip', 'tipsplit', 'donate', 'contribute'
     user_id VARCHAR(66) NOT NULL,
     data JSONB NOT NULL,
@@ -70,9 +72,11 @@ CREATE TABLE IF NOT EXISTS pending_transactions (
 );
 
 -- Indexes for performance
-CREATE INDEX IF NOT EXISTS idx_user_stats_sent ON user_stats(total_sent DESC);
-CREATE INDEX IF NOT EXISTS idx_user_stats_received ON user_stats(total_received DESC);
+CREATE INDEX IF NOT EXISTS idx_user_stats_space_sent ON user_stats(space_id, total_sent DESC);
+CREATE INDEX IF NOT EXISTS idx_user_stats_space_received ON user_stats(space_id, total_received DESC);
+CREATE INDEX IF NOT EXISTS idx_payment_requests_space ON payment_requests(space_id);
 CREATE INDEX IF NOT EXISTS idx_payment_requests_channel ON payment_requests(channel_id);
 CREATE INDEX IF NOT EXISTS idx_contributions_request ON contributions(request_id);
-CREATE INDEX IF NOT EXISTS idx_user_cooldowns_lookup ON user_cooldowns(user_id, command);
+CREATE INDEX IF NOT EXISTS idx_user_cooldowns_lookup ON user_cooldowns(space_id, user_id, command);
+CREATE INDEX IF NOT EXISTS idx_pending_tx_space ON pending_transactions(space_id);
 CREATE INDEX IF NOT EXISTS idx_pending_tx_created ON pending_transactions(created_at);
