@@ -166,6 +166,25 @@ export async function handleFormResponse(
     }
 }
 
+// Helper to disable buttons in a form
+function createDisabledForm(originalForm: any): any {
+    return {
+        id: originalForm.id,
+        title: originalForm.title,
+        description: originalForm.description + '\n\n✅ **Transaction submitted!**',
+        components: originalForm.components.map((component: any) => ({
+            id: component.id,
+            component: {
+                case: 'button',
+                value: {
+                    ...component.component.value,
+                    disabled: true
+                }
+            }
+        }))
+    }
+}
+
 // Handle transaction responses (actual blockchain transactions)
 export async function handleTransactionResponse(
     handler: BotHandler,
@@ -211,6 +230,10 @@ export async function handleTransactionResponse(
             console.log('[Transaction Response] Transaction already processed:', originalRequestId)
             return
         }
+
+        // Get channel and message info for updating the form
+        const channelId = pendingTx.channelId
+        const messageId = pendingTx.messageId
 
         // Handle contribution (stored in database)
         if (originalRequestId.startsWith('contrib-')) {
