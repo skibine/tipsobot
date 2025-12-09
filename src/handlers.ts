@@ -214,18 +214,23 @@ export async function handleTransactionResponse(
         })
 
         if (!pendingTx) {
-            console.log('[Transaction Response] 🛑 No pending transaction found (already processed or cancelled)')
-            console.log('[Transaction Response] This usually means it was already deleted')
+            console.log('[Transaction Response] 🛑 No transaction record found at all')
             return
         }
 
+        // ✨ KEY FIX: Check if already processed (not just pending)
         if (pendingTx.status === 'processed') {
-            console.log('[Transaction Response] 🛑 DUPLICATE! Transaction already marked as processed:', originalRequestId)
+            console.log('[Transaction Response] 🛑 DUPLICATE! Transaction already processed:', originalRequestId)
             console.log('[Transaction Response] Ignoring this duplicate callback')
             return
         }
 
-        console.log('[Transaction Response] ✅ Status is "pending", proceeding with processing...')
+        if (pendingTx.status === 'pending') {
+            console.log('[Transaction Response] ✅ Status is "pending", proceeding with processing...')
+        } else {
+            console.log('[Transaction Response] Status is:', pendingTx.status)
+            return
+        }
 
         // Get channel and message info for updating the form
         const channelId = pendingTx.channelId
@@ -307,10 +312,10 @@ export async function handleTransactionResponse(
                 await handler.sendMessage(paymentRequest.channel_id, updateMessage)
             }
 
-            // Mark as processed and clean up
-            console.log('[Transaction Response] Marking as processed and deleting from DB')
+            // ✨ KEY FIX: Mark as processed but DON'T delete (keep for 7 days)
+            console.log('[Transaction Response] Marking as processed (keeping in DB for 7 days)')
             await updatePendingTransactionStatus(originalRequestId, 'processed')
-            await deletePendingTransaction(originalRequestId)
+            // ❌ NO: await deletePendingTransaction(originalRequestId)
             console.log('[Transaction Response] ✅ Contribution successfully processed!')
 
         } else if (originalRequestId.startsWith('tip-')) {
@@ -344,10 +349,10 @@ export async function handleTransactionResponse(
                 ] }
             )
 
-            // Mark as processed and clean up
-            console.log('[Transaction Response] Marking as processed and deleting from DB')
+            // ✨ KEY FIX: Mark as processed but DON'T delete
+            console.log('[Transaction Response] Marking as processed (keeping in DB for 7 days)')
             await updatePendingTransactionStatus(originalRequestId, 'processed')
-            await deletePendingTransaction(originalRequestId)
+            // ❌ NO: await deletePendingTransaction(originalRequestId)
             console.log('[Transaction Response] ✅ Tip successfully processed!')
 
         } else if (originalRequestId.startsWith('tipsplit-')) {
@@ -409,10 +414,10 @@ export async function handleTransactionResponse(
                     { mentions }
                 )
 
-                // Mark as processed and clean up
-                console.log('[Transaction Response] Marking tipsplit as processed and deleting from DB')
+                // ✨ KEY FIX: Mark as processed but DON'T delete
+                console.log('[Transaction Response] Marking tipsplit as processed (keeping in DB for 7 days)')
                 await updatePendingTransactionStatus(originalRequestId, 'processed')
-                await deletePendingTransaction(originalRequestId)
+                // ❌ NO: await deletePendingTransaction(originalRequestId)
                 console.log('[Transaction Response] ✅ Tipsplit successfully processed!')
             }
 
@@ -433,28 +438,17 @@ export async function handleTransactionResponse(
                 donations: 1
             })
 
-            // ✨ NEW: Send success message
+            // Send success message
             await handler.sendMessage(
                 data.channelId,
                 `❤️ Thank you <@${pendingTx.userId}> for your ~$${data.usdAmount.toFixed(2)} (${data.ethAmount.toFixed(6)} ETH) donation! Your support means everything! 🙏`,
                 { mentions: [{ userId: pendingTx.userId, displayName: pendingTx.userId }] }
             )
 
-            // ✨ NEW: Try to add reaction to the original confirmation message to visually "complete" it
-            // This helps signal that the transaction is done
-            try {
-                if (messageId && messageId !== event.eventId) {
-                    await handler.sendReaction(data.channelId, messageId, '✅')
-                    console.log('[Transaction Response] Added reaction to confirmation message')
-                }
-            } catch (reactionError) {
-                console.log('[Transaction Response] Could not add reaction (not critical):', reactionError)
-            }
-
-            // Mark as processed and clean up
-            console.log('[Transaction Response] Marking donation as processed and deleting from DB')
+            // ✨ KEY FIX: Mark as processed but DON'T delete (keep for 7 days)
+            console.log('[Transaction Response] Marking donation as processed (keeping in DB for 7 days)')
             await updatePendingTransactionStatus(originalRequestId, 'processed')
-            await deletePendingTransaction(originalRequestId)
+            // ❌ NO: await deletePendingTransaction(originalRequestId)
             console.log('[Transaction Response] ✅ Donation successfully processed!')
 
         } else {
