@@ -295,24 +295,12 @@ bot.onSlashCommand('tip', async (handler, event) => {
 
         // Store pending tip in database
         const requestId = `tip-${eventId}`
-        await savePendingTransaction(spaceId, requestId, 'tip', userId, {
-            recipientId: recipient.userId,
-            recipientName: recipient.displayName,
-            recipientWallet,
-            usdAmount,
-            ethAmount,
-            channelId
-        })
-
-        console.log('[/tip] Sending confirmation dialog')
-
-        // Send confirmation dialog
-        await handler.sendInteractionRequest(channelId, {
+        const sentMessage = await handler.sendInteractionRequest(channelId, {
             case: 'form',
             value: {
                 id: requestId,
                 title: `💸 Confirm Tip`,
-                description: `Send $${usdAmount.toFixed(2)} (~${ethAmount.toFixed(6)} ETH) to <@${recipient.userId}>${recipient.userId}>?\n\nRecipient wallet: ${recipientWallet.slice(0, 6)}...${recipientWallet.slice(-4)}`,
+                description: `Send $${usdAmount.toFixed(2)} (~${ethAmount.toFixed(6)} ETH) to <@${recipient.userId}>?\n\nRecipient wallet: ${recipientWallet.slice(0, 6)}...${recipientWallet.slice(-4)}`,
                 components: [
                     {
                         id: 'confirm',
@@ -331,6 +319,19 @@ bot.onSlashCommand('tip', async (handler, event) => {
                 ]
             }
         }, hexToBytes(userId as `0x${string}`))
+
+        // Save pending transaction with messageId and channelId
+        const messageId = sentMessage?.id || eventId
+        await savePendingTransaction(spaceId, requestId, 'tip', userId, {
+            recipientId: recipient.userId,
+            recipientName: recipient.displayName,
+            recipientWallet,
+            usdAmount,
+            ethAmount,
+            channelId
+        }, messageId, channelId)
+
+        console.log('[/tip] Confirmation dialog sent')
 
     } catch (error) {
         console.error('[/tip] Error:', error)
@@ -422,32 +423,16 @@ bot.onSlashCommand('tipsplit', async (handler, event) => {
             })
         }
 
-        // Store pending tip in database
-        const requestId = `tipsplit-${eventId}`
-        await savePendingTransaction(spaceId, requestId, 'tipsplit', userId, {
-            recipients: recipients.map(r => ({
-                userId: r.userId,
-                displayName: r.displayName,
-                wallet: r.wallet,
-                usdAmount: splitUsd,
-                ethAmount: r.amount
-            })),
-            totalUsd,
-            totalEth,
-            channelId,
-            completedRecipients: [] // Track which recipients have completed their transaction
-        })
-
         // Build breakdown
         const breakdown = recipients
             .map(r => `  • $${splitUsd.toFixed(2)} (~${r.amount.toFixed(6)} ETH) → <@${r.userId}>`)
             .join('\n')
 
         // Send confirmation dialog
-        await handler.sendInteractionRequest(channelId, {
+        const sentMessage = await handler.sendInteractionRequest(channelId, {
             case: 'form',
             value: {
-                id: requestId,
+                id: `tipsplit-${eventId}`,
                 title: `💸 Confirm Split Tip`,
                 description: `Split $${totalUsd.toFixed(2)} (~${totalEth.toFixed(6)} ETH) between ${mentions.length} users:\n\n${breakdown}`,
                 components: [
@@ -468,6 +453,23 @@ bot.onSlashCommand('tipsplit', async (handler, event) => {
                 ]
             }
         }, hexToBytes(userId as `0x${string}`))
+
+        // Store pending tip in database
+        const requestId = `tipsplit-${eventId}`
+        const messageId = sentMessage?.id || eventId
+        await savePendingTransaction(spaceId, requestId, 'tipsplit', userId, {
+            recipients: recipients.map(r => ({
+                userId: r.userId,
+                displayName: r.displayName,
+                wallet: r.wallet,
+                usdAmount: splitUsd,
+                ethAmount: r.amount
+            })),
+            totalUsd,
+            totalEth,
+            channelId,
+            completedRecipients: [] // Track which recipients have completed their transaction
+        }, messageId, channelId)
 
     } catch (error) {
         console.error('Error in /tip-split:', error)
@@ -524,20 +526,11 @@ bot.onSlashCommand('donate', async (handler, event) => {
             return
         }
 
-        // Store pending donation in database
-        const requestId = `donate-${eventId}`
-        await savePendingTransaction(spaceId, requestId, 'donate', userId, {
-            usdAmount,
-            ethAmount,
-            botAddress: bot.appAddress,
-            channelId
-        })
-
         // Send confirmation dialog
-        await handler.sendInteractionRequest(channelId, {
+        const sentMessage = await handler.sendInteractionRequest(channelId, {
             case: 'form',
             value: {
-                id: requestId,
+                id: `donate-${eventId}`,
                 title: `❤️ Confirm Donation`,
                 description: `Donate $${usdAmount.toFixed(2)} (~${ethAmount.toFixed(6)} ETH) to support TipsoBot?\n\nYour support helps keep this bot running! 🙏`,
                 components: [
@@ -558,6 +551,16 @@ bot.onSlashCommand('donate', async (handler, event) => {
                 ]
             }
         }, hexToBytes(userId as `0x${string}`))
+
+        // Store pending donation in database
+        const requestId = `donate-${eventId}`
+        const messageId = sentMessage?.id || eventId
+        await savePendingTransaction(spaceId, requestId, 'donate', userId, {
+            usdAmount,
+            ethAmount,
+            botAddress: bot.appAddress,
+            channelId
+        }, messageId, channelId)
 
     } catch (error) {
         console.error('Error in /donate:', error)
@@ -806,26 +809,11 @@ bot.onSlashCommand('contribute', async (handler, event) => {
             return
         }
 
-        // Store pending contribution in database (will be processed after transaction confirmation)
-        const contributionId = `contrib-${eventId}`
-        await savePendingTransaction(spaceId, contributionId, 'contribute', userId, {
-            requestId,
-            creatorId: paymentRequest.creator_id,
-            creatorName: paymentRequest.creator_name,
-            creatorWallet,
-            contributorId: userId,
-            contributionUsd: amount,
-            ethAmount,
-            channelId
-        })
-
-        console.log('[/contribute] Sending confirmation for contribution to:', requestId)
-
         // Send confirmation dialog
-        await handler.sendInteractionRequest(channelId, {
+        const sentMessage = await handler.sendInteractionRequest(channelId, {
             case: 'form',
             value: {
-                id: contributionId,
+                id: `contrib-${eventId}`,
                 title: `💰 Confirm Contribution`,
                 description: `Contribute $${amount.toFixed(2)} (~${ethAmount.toFixed(6)} ETH) to:\n\n"${paymentRequest.description}"\n\nCreated by: <@${paymentRequest.creator_id}>`,
                 components: [
@@ -846,6 +834,22 @@ bot.onSlashCommand('contribute', async (handler, event) => {
                 ]
             }
         }, hexToBytes(userId as `0x${string}`))
+
+        // Store pending contribution in database (will be processed after transaction confirmation)
+        const contributionId = `contrib-${eventId}`
+        const messageId = sentMessage?.id || eventId
+        await savePendingTransaction(spaceId, contributionId, 'contribute', userId, {
+            requestId,
+            creatorId: paymentRequest.creator_id,
+            creatorName: paymentRequest.creator_name,
+            creatorWallet,
+            contributorId: userId,
+            contributionUsd: amount,
+            ethAmount,
+            channelId
+        }, messageId, channelId)
+
+        console.log('[/contribute] Sending confirmation for contribution to:', requestId)
 
     } catch (error) {
         console.error('[/contribute] Error:', error)
