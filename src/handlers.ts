@@ -195,7 +195,10 @@ export async function handleTransactionResponse(
     const txId = transaction.requestId
     const spaceId = event.spaceId
 
-    console.log('[Transaction Response] Received for:', txId, 'SpaceId:', spaceId)
+    console.log('[Transaction Response] ========================')
+    console.log('[Transaction Response] Received transaction result for:', txId)
+    console.log('[Transaction Response] SpaceId:', spaceId)
+    console.log('[Transaction Response] ========================')
 
     try {
         // Extract the original request ID from transaction ID
@@ -217,19 +220,31 @@ export async function handleTransactionResponse(
             return
         }
 
-        console.log('[Transaction Response] Original request ID:', originalRequestId, 'Recipient:', recipientUserId || 'N/A')
+        console.log('[Transaction Response] Original request ID:', originalRequestId)
+        console.log('[Transaction Response] Looking up in DB...')
 
         // Check if transaction was already processed
         const pendingTx = await getPendingTransaction(originalRequestId)
+        
+        console.log('[Transaction Response] DB lookup result:', {
+            found: !!pendingTx,
+            status: pendingTx?.status,
+            type: pendingTx?.type
+        })
+
         if (!pendingTx) {
-            console.log('[Transaction Response] No pending transaction found (already processed or cancelled)')
+            console.log('[Transaction Response] 🛑 No pending transaction found (already processed or cancelled)')
+            console.log('[Transaction Response] This usually means it was already deleted')
             return
         }
 
         if (pendingTx.status === 'processed') {
-            console.log('[Transaction Response] Transaction already processed:', originalRequestId)
+            console.log('[Transaction Response] 🛑 DUPLICATE! Transaction already marked as processed:', originalRequestId)
+            console.log('[Transaction Response] Ignoring this duplicate callback')
             return
         }
+
+        console.log('[Transaction Response] ✅ Status is "pending", proceeding with processing...')
 
         // Get channel and message info for updating the form
         const channelId = pendingTx.channelId
@@ -237,6 +252,7 @@ export async function handleTransactionResponse(
 
         // Handle contribution (stored in database)
         if (originalRequestId.startsWith('contrib-')) {
+            console.log('[Transaction Response] Processing contribution...')
             const data = pendingTx.data
             const ethPrice = await getEthPrice()
 
@@ -311,11 +327,14 @@ export async function handleTransactionResponse(
             }
 
             // Mark as processed and clean up
+            console.log('[Transaction Response] Marking as processed and deleting from DB')
             await updatePendingTransactionStatus(originalRequestId, 'processed')
             await deletePendingTransaction(originalRequestId)
+            console.log('[Transaction Response] ✅ Contribution successfully processed!')
 
         } else if (originalRequestId.startsWith('tip-')) {
             // Regular tip
+            console.log('[Transaction Response] Processing regular tip...')
             const data = pendingTx.data
 
             // Update global stats (per space/town)
@@ -345,11 +364,14 @@ export async function handleTransactionResponse(
             )
 
             // Mark as processed and clean up
+            console.log('[Transaction Response] Marking as processed and deleting from DB')
             await updatePendingTransactionStatus(originalRequestId, 'processed')
             await deletePendingTransaction(originalRequestId)
+            console.log('[Transaction Response] ✅ Tip successfully processed!')
 
         } else if (originalRequestId.startsWith('tipsplit-')) {
             // Tip split - need to wait for ALL transactions to complete
+            console.log('[Transaction Response] Processing tipsplit...')
             if (!recipientUserId) {
                 console.error('[Transaction Response] Missing recipient userId for tipsplit')
                 return
@@ -407,12 +429,15 @@ export async function handleTransactionResponse(
                 )
 
                 // Mark as processed and clean up
+                console.log('[Transaction Response] Marking tipsplit as processed and deleting from DB')
                 await updatePendingTransactionStatus(originalRequestId, 'processed')
                 await deletePendingTransaction(originalRequestId)
+                console.log('[Transaction Response] ✅ Tipsplit successfully processed!')
             }
 
         } else if (originalRequestId.startsWith('donate-')) {
             // Donation
+            console.log('[Transaction Response] Processing donation...')
             const data = pendingTx.data
 
             // Update global stats (per space/town)
@@ -435,14 +460,16 @@ export async function handleTransactionResponse(
             )
 
             // Mark as processed and clean up
+            console.log('[Transaction Response] Marking donation as processed and deleting from DB')
             await updatePendingTransactionStatus(originalRequestId, 'processed')
             await deletePendingTransaction(originalRequestId)
+            console.log('[Transaction Response] ✅ Donation successfully processed!')
 
         } else {
             console.log('[Transaction Response] Unknown transaction type:', originalRequestId)
         }
 
     } catch (error) {
-        console.error('[Transaction Response] Error:', error)
+        console.error('[Transaction Response] 🗑 CRITICAL ERROR:', error)
     }
 }
