@@ -24,6 +24,7 @@ export async function handleFormResponse(
     console.log('[Form Response] Event structure:', {
         eventId: event.eventId,
         userId: event.userId,
+        spaceId: event.spaceId,
         channelId: event.channelId,
         refEventId: event.refEventId,
         responseKeys: Object.keys(event.response || {}),
@@ -172,8 +173,9 @@ export async function handleTransactionResponse(
 ) {
     const transaction = event.response.payload.content.value
     const txId = transaction.requestId
+    const spaceId = event.spaceId
 
-    console.log('[Transaction Response] Received for:', txId)
+    console.log('[Transaction Response] Received for:', txId, 'SpaceId:', spaceId)
 
     try {
         // Extract the original request ID from transaction ID
@@ -223,18 +225,18 @@ export async function handleTransactionResponse(
                                   completedAt &&
                                   (now.getTime() - completedAt.getTime() < 10000) // Within 10 seconds
 
-            // Update global stats
-            await updateGlobalStats({
+            // Update global stats (per space/town)
+            await updateGlobalStats(spaceId, {
                 crowdfundingVolume: data.contributionUsd,
                 crowdfundingCount: justCompleted ? 1 : 0
             })
 
-            // Update user stats
-            await upsertUserStats(data.contributorId, data.contributorId, {
+            // Update user stats (per space/town)
+            await upsertUserStats(spaceId, data.contributorId, data.contributorId, {
                 sentAmount: data.contributionUsd,
                 tipsSent: 1
             })
-            await upsertUserStats(data.creatorId, data.creatorName, {
+            await upsertUserStats(spaceId, data.creatorId, data.creatorName, {
                 receivedAmount: data.contributionUsd,
                 tipsReceived: 1
             })
@@ -291,18 +293,18 @@ export async function handleTransactionResponse(
 
             const data = pendingTx.data
 
-            // Update global stats
-            await updateGlobalStats({
+            // Update global stats (per space/town)
+            await updateGlobalStats(spaceId, {
                 tipsVolume: data.usdAmount,
                 tipsCount: 1
             })
 
-            // Update user stats
-            await upsertUserStats(pendingTx.userId, pendingTx.userId, {
+            // Update user stats (per space/town)
+            await upsertUserStats(spaceId, pendingTx.userId, pendingTx.userId, {
                 sentAmount: data.usdAmount,
                 tipsSent: 1
             })
-            await upsertUserStats(data.recipientId, data.recipientName, {
+            await upsertUserStats(spaceId, data.recipientId, data.recipientName, {
                 receivedAmount: data.usdAmount,
                 tipsReceived: 1
             })
@@ -351,21 +353,21 @@ export async function handleTransactionResponse(
             if (data.completedRecipients.length === data.recipients.length) {
                 console.log('[Transaction Response] All tipsplit transactions completed!')
 
-                // Update global stats
-                await updateGlobalStats({
+                // Update global stats (per space/town)
+                await updateGlobalStats(spaceId, {
                     tipsVolume: data.totalUsd,
                     tipsCount: 1
                 })
 
-                // Update user stats
-                await upsertUserStats(pendingTx.userId, pendingTx.userId, {
+                // Update user stats (per space/town)
+                await upsertUserStats(spaceId, pendingTx.userId, pendingTx.userId, {
                     sentAmount: data.totalUsd,
                     tipsSent: 1
                 })
 
                 // Update each recipient's stats
                 for (const recipient of data.recipients) {
-                    await upsertUserStats(recipient.userId, recipient.displayName, {
+                    await upsertUserStats(spaceId, recipient.userId, recipient.displayName, {
                         receivedAmount: recipient.usdAmount,
                         tipsReceived: 1
                     })
@@ -398,14 +400,14 @@ export async function handleTransactionResponse(
 
             const data = pendingTx.data
 
-            // Update global stats
-            await updateGlobalStats({
+            // Update global stats (per space/town)
+            await updateGlobalStats(spaceId, {
                 donationsVolume: data.usdAmount,
                 donationsCount: 1
             })
 
-            // Update user stats
-            await upsertUserStats(pendingTx.userId, pendingTx.userId, {
+            // Update user stats (per space/town)
+            await upsertUserStats(spaceId, pendingTx.userId, pendingTx.userId, {
                 sentAmount: data.usdAmount,
                 donations: 1
             })
