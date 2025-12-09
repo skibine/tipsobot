@@ -20,6 +20,16 @@ export async function handleFormResponse(
 ) {
     const form = event.response.payload.content.value
 
+    // Log event structure to understand what we have
+    console.log('[Form Response] Event structure:', {
+        eventId: event.eventId,
+        userId: event.userId,
+        channelId: event.channelId,
+        refEventId: event.refEventId,
+        responseKeys: Object.keys(event.response || {}),
+        requestId: form.requestId
+    })
+
     // Check which button was clicked
     const clickedButton = form.components.find((c: any) => c.component.case === 'button')
     console.log('[Form Response] Button clicked:', clickedButton?.id, 'Request ID:', form.requestId)
