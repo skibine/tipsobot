@@ -166,25 +166,6 @@ export async function handleFormResponse(
     }
 }
 
-// Helper to disable buttons in a form
-function createDisabledForm(originalForm: any): any {
-    return {
-        id: originalForm.id,
-        title: originalForm.title,
-        description: originalForm.description + '\n\n✅ **Transaction submitted!**',
-        components: originalForm.components.map((component: any) => ({
-            id: component.id,
-            component: {
-                case: 'button',
-                value: {
-                    ...component.component.value,
-                    disabled: true
-                }
-            }
-        }))
-    }
-}
-
 // Handle transaction responses (actual blockchain transactions)
 export async function handleTransactionResponse(
     handler: BotHandler,
@@ -452,12 +433,23 @@ export async function handleTransactionResponse(
                 donations: 1
             })
 
-            // Send success message
+            // ✨ NEW: Send success message
             await handler.sendMessage(
                 data.channelId,
                 `❤️ Thank you <@${pendingTx.userId}> for your ~$${data.usdAmount.toFixed(2)} (${data.ethAmount.toFixed(6)} ETH) donation! Your support means everything! 🙏`,
                 { mentions: [{ userId: pendingTx.userId, displayName: pendingTx.userId }] }
             )
+
+            // ✨ NEW: Try to add reaction to the original confirmation message to visually "complete" it
+            // This helps signal that the transaction is done
+            try {
+                if (messageId && messageId !== event.eventId) {
+                    await handler.sendReaction(data.channelId, messageId, '✅')
+                    console.log('[Transaction Response] Added reaction to confirmation message')
+                }
+            } catch (reactionError) {
+                console.log('[Transaction Response] Could not add reaction (not critical):', reactionError)
+            }
 
             // Mark as processed and clean up
             console.log('[Transaction Response] Marking donation as processed and deleting from DB')
