@@ -5,6 +5,7 @@ import {
     getPendingTransaction,
     deletePendingTransaction,
     updatePendingTransaction,
+    updatePendingTransactionStatus,
     updateGlobalStats,
     upsertUserStats,
     addContribution,
@@ -199,14 +200,20 @@ export async function handleTransactionResponse(
 
         console.log('[Transaction Response] Original request ID:', originalRequestId, 'Recipient:', recipientUserId || 'N/A')
 
+        // Check if transaction was already processed
+        const pendingTx = await getPendingTransaction(originalRequestId)
+        if (!pendingTx) {
+            console.log('[Transaction Response] No pending transaction found (already processed or cancelled)')
+            return
+        }
+
+        if (pendingTx.status === 'processed') {
+            console.log('[Transaction Response] Transaction already processed:', originalRequestId)
+            return
+        }
+
         // Handle contribution (stored in database)
         if (originalRequestId.startsWith('contrib-')) {
-            const pendingTx = await getPendingTransaction(originalRequestId)
-            if (!pendingTx) {
-                console.log('[Transaction Response] No pending contribution found (already processed or cancelled)')
-                return
-            }
-
             const data = pendingTx.data
             const ethPrice = await getEthPrice()
 
@@ -280,17 +287,12 @@ export async function handleTransactionResponse(
                 await handler.sendMessage(paymentRequest.channel_id, updateMessage)
             }
 
-            // Clean up pending transaction
+            // Mark as processed and clean up
+            await updatePendingTransactionStatus(originalRequestId, 'processed')
             await deletePendingTransaction(originalRequestId)
 
         } else if (originalRequestId.startsWith('tip-')) {
             // Regular tip
-            const pendingTx = await getPendingTransaction(originalRequestId)
-            if (!pendingTx) {
-                console.log('[Transaction Response] No pending tip found (already processed or cancelled)')
-                return
-            }
-
             const data = pendingTx.data
 
             // Update global stats (per space/town)
@@ -319,19 +321,14 @@ export async function handleTransactionResponse(
                 ] }
             )
 
-            // Clean up
+            // Mark as processed and clean up
+            await updatePendingTransactionStatus(originalRequestId, 'processed')
             await deletePendingTransaction(originalRequestId)
 
         } else if (originalRequestId.startsWith('tipsplit-')) {
             // Tip split - need to wait for ALL transactions to complete
             if (!recipientUserId) {
                 console.error('[Transaction Response] Missing recipient userId for tipsplit')
-                return
-            }
-
-            const pendingTx = await getPendingTransaction(originalRequestId)
-            if (!pendingTx) {
-                console.log('[Transaction Response] No pending tipsplit found (already processed or cancelled)')
                 return
             }
 
@@ -386,18 +383,13 @@ export async function handleTransactionResponse(
                     { mentions }
                 )
 
-                // Clean up
+                // Mark as processed and clean up
+                await updatePendingTransactionStatus(originalRequestId, 'processed')
                 await deletePendingTransaction(originalRequestId)
             }
 
         } else if (originalRequestId.startsWith('donate-')) {
             // Donation
-            const pendingTx = await getPendingTransaction(originalRequestId)
-            if (!pendingTx) {
-                console.log('[Transaction Response] No pending donation found (already processed or cancelled)')
-                return
-            }
-
             const data = pendingTx.data
 
             // Update global stats (per space/town)
@@ -419,7 +411,8 @@ export async function handleTransactionResponse(
                 { mentions: [{ userId: pendingTx.userId, displayName: pendingTx.userId }] }
             )
 
-            // Clean up
+            // Mark as processed and clean up
+            await updatePendingTransactionStatus(originalRequestId, 'processed')
             await deletePendingTransaction(originalRequestId)
 
         } else {
