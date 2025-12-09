@@ -24,12 +24,14 @@ export async function initDatabase() {
     }
 }
 
-// Global Stats Functions
-export async function getGlobalStats() {
+// Global Stats Functions (per space/town)
+export async function getGlobalStats(spaceId: string) {
     const result = await pool.query(
-        'SELECT * FROM global_stats WHERE id = 1'
+        'SELECT * FROM global_stats WHERE space_id = $1',
+        [spaceId]
     )
     return result.rows[0] || {
+        space_id: spaceId,
         total_tips_volume: 0,
         total_tips_count: 0,
         total_donations_volume: 0,
@@ -39,7 +41,7 @@ export async function getGlobalStats() {
     }
 }
 
-export async function updateGlobalStats(stats: {
+export async function updateGlobalStats(spaceId: string, stats: {
     tipsVolume?: number
     tipsCount?: number
     donationsVolume?: number
@@ -48,8 +50,8 @@ export async function updateGlobalStats(stats: {
     crowdfundingCount?: number
 }) {
     const updates: string[] = []
-    const values: number[] = []
-    let paramIndex = 1
+    const values: any[] = [spaceId]
+    let paramIndex = 2
 
     if (stats.tipsVolume !== undefined) {
         updates.push(`total_tips_volume = total_tips_volume + $${paramIndex++}`)
@@ -80,22 +82,29 @@ export async function updateGlobalStats(stats: {
 
     updates.push('updated_at = NOW()')
 
+    // Ensure row exists
     await pool.query(
-        `UPDATE global_stats SET ${updates.join(', ')} WHERE id = 1`,
+        'INSERT INTO global_stats (space_id) VALUES ($1) ON CONFLICT (space_id) DO NOTHING',
+        [spaceId]
+    )
+
+    await pool.query(
+        `UPDATE global_stats SET ${updates.join(', ')} WHERE space_id = $1`,
         values
     )
 }
 
-// User Stats Functions
-export async function getUserStats(userId: string) {
+// User Stats Functions (per space/town)
+export async function getUserStats(spaceId: string, userId: string) {
     const result = await pool.query(
-        'SELECT * FROM user_stats WHERE user_id = $1',
-        [userId]
+        'SELECT * FROM user_stats WHERE space_id = $1 AND user_id = $2',
+        [spaceId, userId]
     )
     return result.rows[0] || null
 }
 
 export async function upsertUserStats(
+    spaceId: string,
     userId: string,
     displayName: string,
     stats: {
@@ -107,8 +116,8 @@ export async function upsertUserStats(
     }
 ) {
     const updates: string[] = []
-    const values: any[] = [userId, displayName]
-    let paramIndex = 3
+    const values: any[] = [spaceId, userId, displayName]
+    let paramIndex = 4
 
     if (stats.sentAmount !== undefined) {
         updates.push(`total_sent = user_stats.total_sent + $${paramIndex++}`)
@@ -134,36 +143,36 @@ export async function upsertUserStats(
     updates.push('updated_at = NOW()')
 
     await pool.query(
-        `INSERT INTO user_stats (user_id, display_name, total_sent, total_received, tips_sent, tips_received, donations)
-         VALUES ($1, $2, 0, 0, 0, 0, 0)
-         ON CONFLICT (user_id) DO UPDATE SET
+        `INSERT INTO user_stats (space_id, user_id, display_name, total_sent, total_received, tips_sent, tips_received, donations)
+         VALUES ($1, $2, $3, 0, 0, 0, 0, 0)
+         ON CONFLICT (space_id, user_id) DO UPDATE SET
          display_name = EXCLUDED.display_name,
          ${updates.join(', ')}`,
         values
     )
 }
 
-// Leaderboard Functions
-export async function getTopTippers(limit: number = 10) {
+// Leaderboard Functions (per space/town)
+export async function getTopTippers(spaceId: string, limit: number = 10) {
     const result = await pool.query(
         `SELECT user_id, display_name, total_sent as amount, tips_sent as count
          FROM user_stats
-         WHERE tips_sent > 0
+         WHERE space_id = $1 AND tips_sent > 0
          ORDER BY total_sent DESC
-         LIMIT $1`,
-        [limit]
+         LIMIT $2`,
+        [spaceId, limit]
     )
     return result.rows
 }
 
-export async function getTopDonators(limit: number = 10) {
+export async function getTopDonators(spaceId: string, limit: number = 10) {
     const result = await pool.query(
         `SELECT user_id, display_name, total_sent as amount, donations as count
          FROM user_stats
-         WHERE donations > 0
+         WHERE space_id = $1 AND donations > 0
          ORDER BY total_sent DESC, donations DESC
-         LIMIT $1`,
-        [limit]
+         LIMIT $2`,
+        [spaceId, limit]
     )
     return result.rows
 }
@@ -171,6 +180,7 @@ export async function getTopDonators(limit: number = 10) {
 // Payment Request Functions
 export async function createPaymentRequest(data: {
     id: string
+    spaceId: string
     creatorId: string
     creatorName: string
     amount: number
@@ -178,9 +188,9 @@ export async function createPaymentRequest(data: {
     channelId: string
 }) {
     await pool.query(
-        `INSERT INTO payment_requests (id, creator_id, creator_name, amount, description, channel_id)
-         VALUES ($1, $2, $3, $4, $5, $6)`,
-        [data.id, data.creatorId, data.creatorName, data.amount, data.description, data.channelId]
+        `INSERT INTO payment_requests (id, space_id, creator_id, creator_name, amount, description, channel_id)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+        [data.id, data.spaceId, data.creatorId, data.creatorName, data.amount, data.description, data.channelId]
     )
 }
 
@@ -239,11 +249,11 @@ export async function getContributions(requestId: string) {
     return result.rows
 }
 
-// Cooldown Functions
-export async function checkCooldown(userId: string, command: string, cooldownMs: number): Promise<boolean> {
+// Cooldown Functions (per space/town)
+export async function checkCooldown(spaceId: string, userId: string, command: string, cooldownMs: number): Promise<boolean> {
     const result = await pool.query(
-        `SELECT last_used FROM user_cooldowns WHERE user_id = $1 AND command = $2`,
-        [userId, command]
+        `SELECT last_used FROM user_cooldowns WHERE space_id = $1 AND user_id = $2 AND command = $3`,
+        [spaceId, userId, command]
     )
 
     if (result.rows.length === 0) {
@@ -255,19 +265,19 @@ export async function checkCooldown(userId: string, command: string, cooldownMs:
     return (now - lastUsed) >= cooldownMs
 }
 
-export async function updateCooldown(userId: string, command: string) {
+export async function updateCooldown(spaceId: string, userId: string, command: string) {
     await pool.query(
-        `INSERT INTO user_cooldowns (user_id, command, last_used)
-         VALUES ($1, $2, NOW())
-         ON CONFLICT (user_id, command) DO UPDATE SET last_used = NOW()`,
-        [userId, command]
+        `INSERT INTO user_cooldowns (space_id, user_id, command, last_used)
+         VALUES ($1, $2, $3, NOW())
+         ON CONFLICT (space_id, user_id, command) DO UPDATE SET last_used = NOW()`,
+        [spaceId, userId, command]
     )
 }
 
-export async function getRemainingCooldown(userId: string, command: string, cooldownMs: number): Promise<number> {
+export async function getRemainingCooldown(spaceId: string, userId: string, command: string, cooldownMs: number): Promise<number> {
     const result = await pool.query(
-        `SELECT last_used FROM user_cooldowns WHERE user_id = $1 AND command = $2`,
-        [userId, command]
+        `SELECT last_used FROM user_cooldowns WHERE space_id = $1 AND user_id = $2 AND command = $3`,
+        [spaceId, userId, command]
     )
 
     if (result.rows.length === 0) {
@@ -280,13 +290,13 @@ export async function getRemainingCooldown(userId: string, command: string, cool
     return Math.max(0, remaining)
 }
 
-// Pending Transactions Functions
-export async function savePendingTransaction(id: string, type: string, userId: string, data: any) {
+// Pending Transactions Functions (per space/town)
+export async function savePendingTransaction(spaceId: string, id: string, type: string, userId: string, data: any) {
     await pool.query(
-        `INSERT INTO pending_transactions (id, type, user_id, data)
-         VALUES ($1, $2, $3, $4)
+        `INSERT INTO pending_transactions (space_id, id, type, user_id, data)
+         VALUES ($1, $2, $3, $4, $5)
          ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data`,
-        [id, type, userId, JSON.stringify(data)]
+        [spaceId, id, type, userId, JSON.stringify(data)]
     )
 }
 
@@ -299,6 +309,7 @@ export async function getPendingTransaction(id: string) {
     const row = result.rows[0]
     return {
         id: row.id,
+        spaceId: row.space_id,
         type: row.type,
         userId: row.user_id,
         data: row.data,
