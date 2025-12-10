@@ -102,12 +102,11 @@ export async function handleFormResponse(
                 const amountWei = parseEther(data.ethAmount.toString())
                 const usdValue = data.contributionUsd.toFixed(2)
 
-                const txMessage = await handler.sendInteractionRequest(event.channelId, {
+                await handler.sendInteractionRequest(event.channelId, {
                     case: 'transaction',
                     value: {
                         id: `tx-${form.requestId}`,
-                        title: `Send ~$${usdValue}`,
-                        description: `Transfer ~$${usdValue} (${data.ethAmount.toFixed(6)} ETH) on Base\n\nTo: ${data.creatorWallet.slice(0, 6)}...${data.creatorWallet.slice(-4)}\n\n⚠️ Make sure you have enough ETH for the transfer plus gas (~$0.01)`,
+                        title: `Send ~$${usdValue} (${data.ethAmount.toFixed(6)} ETH)`,
                         content: {
                             case: 'evm',
                             value: {
@@ -121,8 +120,8 @@ export async function handleFormResponse(
                     }
                 }, hexToBytes(event.userId as `0x${string}`))
 
-                // Save transaction form messageId for later deletion
-                const txMessageId = txMessage?.id || event.eventId
+                // Transaction messageId will be captured by onStreamEvent
+                const txMessageId = `tx-${form.requestId}`
                 data.transactionMessageId = txMessageId
                 await updatePendingTransaction(form.requestId, data)
                 console.log('[Form Response] Transaction form sent, messageId:', txMessageId)
@@ -132,12 +131,11 @@ export async function handleFormResponse(
                 const amountWei = parseEther(data.ethAmount.toString())
                 const usdValue = data.usdAmount.toFixed(2)
 
-                const txMessage = await handler.sendInteractionRequest(event.channelId, {
+                await handler.sendInteractionRequest(event.channelId, {
                     case: 'transaction',
                     value: {
                         id: `tx-${form.requestId}`,
-                        title: `Send ~$${usdValue}`,
-                        description: `Transfer ~$${usdValue} (${data.ethAmount.toFixed(6)} ETH) on Base\n\nTo: ${data.recipientWallet.slice(0, 6)}...${data.recipientWallet.slice(-4)}\n\n⚠️ Make sure you have enough ETH for the transfer plus gas (~$0.01)`,
+                        title: `Send ~$${usdValue} (${data.ethAmount.toFixed(6)} ETH)`,
                         content: {
                             case: 'evm',
                             value: {
@@ -151,8 +149,8 @@ export async function handleFormResponse(
                     }
                 }, hexToBytes(event.userId as `0x${string}`))
 
-                // Save transaction form messageId for later deletion
-                const txMessageId = txMessage?.id || event.eventId
+                // Transaction messageId will be captured by onStreamEvent
+                const txMessageId = `tx-${form.requestId}`
                 data.transactionMessageId = txMessageId
                 await updatePendingTransaction(form.requestId, data)
                 console.log('[Form Response] Transaction form sent, messageId:', txMessageId)
@@ -165,12 +163,11 @@ export async function handleFormResponse(
                     const amountWei = parseEther(recipient.ethAmount.toString())
                     const usdValue = recipient.usdAmount.toFixed(2)
 
-                    const txMessage = await handler.sendInteractionRequest(event.channelId, {
+                    await handler.sendInteractionRequest(event.channelId, {
                         case: 'transaction',
                         value: {
                             id: `tx-${form.requestId}-${recipient.userId}`,
-                            title: `Send ~$${usdValue}`,
-                            description: `Transfer ~$${usdValue} (${recipient.ethAmount.toFixed(6)} ETH) on Base\n\nTo: ${recipient.wallet.slice(0, 6)}...${recipient.wallet.slice(-4)}\n\n⚠️ Make sure you have enough ETH for the transfer plus gas (~$0.01)`,
+                            title: `Send ~$${usdValue} (${recipient.ethAmount.toFixed(6)} ETH)`,
                             content: {
                                 case: 'evm',
                                 value: {
@@ -184,8 +181,8 @@ export async function handleFormResponse(
                         }
                     }, hexToBytes(event.userId as `0x${string}`))
 
-                    // Save each transaction message ID
-                    const txMessageId = txMessage?.id || `${event.eventId}-${recipient.userId}`
+                    // Transaction messageId will be captured by onStreamEvent
+                    const txMessageId = `tx-${form.requestId}-${recipient.userId}`
                     transactionMessageIds.push(txMessageId)
                 }
 
@@ -199,12 +196,11 @@ export async function handleFormResponse(
                 const amountWei = parseEther(data.ethAmount.toString())
                 const usdValue = data.usdAmount.toFixed(2)
 
-                const txMessage = await handler.sendInteractionRequest(event.channelId, {
+                await handler.sendInteractionRequest(event.channelId, {
                     case: 'transaction',
                     value: {
                         id: `tx-${form.requestId}`,
-                        title: `Send ~$${usdValue}`,
-                        description: `Donate ~$${usdValue} (${data.ethAmount.toFixed(6)} ETH) to TipsoBot\n\nYour support is appreciated! 🙏\n\n⚠️ Make sure you have enough ETH for the transfer plus gas (~$0.01)`,
+                        title: `Donate ~$${usdValue} (${data.ethAmount.toFixed(6)} ETH)`,
                         content: {
                             case: 'evm',
                             value: {
@@ -218,8 +214,8 @@ export async function handleFormResponse(
                     }
                 }, hexToBytes(event.userId as `0x${string}`))
 
-                // Save transaction form messageId for later deletion
-                const txMessageId = txMessage?.id || event.eventId
+                // Transaction messageId will be captured by onStreamEvent
+                const txMessageId = `tx-${form.requestId}`
                 data.transactionMessageId = txMessageId
                 await updatePendingTransaction(form.requestId, data)
                 console.log('[Form Response] Transaction form sent, messageId:', txMessageId)

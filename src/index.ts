@@ -257,7 +257,7 @@ bot.onSlashCommand('tip', async (handler, event) => {
     try {
         // Get recipient's wallet
         console.log('[/tip] Getting wallet for:', recipient.userId)
-        const recipientWallet = await getSmartAccountFromUserId(bot, { userId: recipient.userId })
+        const recipientWallet = await getSmartAccountFromUserId(bot, { userId: recipient.userId as `0x${string}` })
         console.log('[/tip] Wallet found:', recipientWallet)
 
         if (!recipientWallet) {
@@ -295,12 +295,11 @@ bot.onSlashCommand('tip', async (handler, event) => {
 
         // Store pending tip in database
         const requestId = `tip-${eventId}`
-        const sentMessage = await handler.sendInteractionRequest(channelId, {
+        await handler.sendInteractionRequest(channelId, {
             case: 'form',
             value: {
                 id: requestId,
-                title: `💸 Confirm Tip`,
-                description: `Send $${usdAmount.toFixed(2)} (~${ethAmount.toFixed(6)} ETH) to <@${recipient.userId}>?\n\nRecipient wallet: ${recipientWallet.slice(0, 6)}...${recipientWallet.slice(-4)}`,
+                title: `💸 Confirm Tip: $${usdAmount.toFixed(2)} (~${ethAmount.toFixed(6)} ETH) to <@${recipient.userId}>`,
                 components: [
                     {
                         id: 'confirm',
@@ -320,14 +319,9 @@ bot.onSlashCommand('tip', async (handler, event) => {
             }
         }, hexToBytes(userId as `0x${string}`))
 
-        // Save pending transaction with messageId and channelId
-        const messageId = sentMessage?.id || eventId
-        console.log('[/tip] 🔍 DEBUG sendInteractionRequest response:', {
-            sentMessage: sentMessage,
-            messageId: messageId,
-            eventId: eventId,
-            hasId: !!sentMessage?.id
-        })
+        // MessageId will be captured by onStreamEvent
+        const messageId = requestId
+        console.log('[/tip] 🔍 Form sent with requestId:', requestId)
         await savePendingTransaction(spaceId, requestId, 'tip', userId, {
             recipientId: recipient.userId,
             recipientName: recipient.displayName,
@@ -416,7 +410,7 @@ bot.onSlashCommand('tipsplit', async (handler, event) => {
         // Get wallets for all recipients
         const recipients = []
         for (const mention of mentions) {
-            const wallet = await getSmartAccountFromUserId(bot, { userId: mention.userId })
+            const wallet = await getSmartAccountFromUserId(bot, { userId: mention.userId as `0x${string}` })
             if (!wallet) {
                 await handler.sendMessage(channelId, `❌ Unable to find wallet for <@${mention.userId}> (${mention.displayName})`)
                 return
@@ -435,12 +429,11 @@ bot.onSlashCommand('tipsplit', async (handler, event) => {
             .join('\n')
 
         // Send confirmation dialog
-        const sentMessage = await handler.sendInteractionRequest(channelId, {
+        await handler.sendInteractionRequest(channelId, {
             case: 'form',
             value: {
                 id: `tipsplit-${eventId}`,
-                title: `💸 Confirm Split Tip`,
-                description: `Split $${totalUsd.toFixed(2)} (~${totalEth.toFixed(6)} ETH) between ${mentions.length} users:\n\n${breakdown}`,
+                title: `💸 Confirm Split Tip: $${totalUsd.toFixed(2)} (~${totalEth.toFixed(6)} ETH) to ${mentions.length} users`,
                 components: [
                     {
                         id: 'confirm',
@@ -462,7 +455,7 @@ bot.onSlashCommand('tipsplit', async (handler, event) => {
 
         // Store pending tip in database
         const requestId = `tipsplit-${eventId}`
-        const messageId = sentMessage?.id || eventId
+        const messageId = requestId
         await savePendingTransaction(spaceId, requestId, 'tipsplit', userId, {
             recipients: recipients.map(r => ({
                 userId: r.userId,
@@ -533,12 +526,11 @@ bot.onSlashCommand('donate', async (handler, event) => {
         }
 
         // Send confirmation dialog
-        const sentMessage = await handler.sendInteractionRequest(channelId, {
+        await handler.sendInteractionRequest(channelId, {
             case: 'form',
             value: {
                 id: `donate-${eventId}`,
-                title: `❤️ Confirm Donation`,
-                description: `Donate $${usdAmount.toFixed(2)} (~${ethAmount.toFixed(6)} ETH) to support TipsoBot?\n\nYour support helps keep this bot running! 🙏`,
+                title: `❤️ Confirm Donation: $${usdAmount.toFixed(2)} (~${ethAmount.toFixed(6)} ETH) to support TipsoBot`,
                 components: [
                     {
                         id: 'confirm',
@@ -560,7 +552,7 @@ bot.onSlashCommand('donate', async (handler, event) => {
 
         // Store pending donation in database
         const requestId = `donate-${eventId}`
-        const messageId = sentMessage?.id || eventId
+        const messageId = requestId
         await savePendingTransaction(spaceId, requestId, 'donate', userId, {
             usdAmount,
             ethAmount,
@@ -816,12 +808,11 @@ bot.onSlashCommand('contribute', async (handler, event) => {
         }
 
         // Send confirmation dialog
-        const sentMessage = await handler.sendInteractionRequest(channelId, {
+        await handler.sendInteractionRequest(channelId, {
             case: 'form',
             value: {
                 id: `contrib-${eventId}`,
-                title: `💰 Confirm Contribution`,
-                description: `Contribute $${amount.toFixed(2)} (~${ethAmount.toFixed(6)} ETH) to:\n\n"${paymentRequest.description}"\n\nCreated by: <@${paymentRequest.creator_id}>`,
+                title: `💰 Confirm Contribution: $${amount.toFixed(2)} (~${ethAmount.toFixed(6)} ETH) to <@${paymentRequest.creator_id}>`,
                 components: [
                     {
                         id: 'confirm',
@@ -843,7 +834,7 @@ bot.onSlashCommand('contribute', async (handler, event) => {
 
         // Store pending contribution in database (will be processed after transaction confirmation)
         const contributionId = `contrib-${eventId}`
-        const messageId = sentMessage?.id || eventId
+        const messageId = contributionId
         await savePendingTransaction(spaceId, contributionId, 'contribute', userId, {
             requestId,
             creatorId: paymentRequest.creator_id,
@@ -866,50 +857,34 @@ bot.onSlashCommand('contribute', async (handler, event) => {
 // Track interaction request events to get real eventIds for deletion
 bot.onStreamEvent(async (handler, event) => {
     try {
-        const parsedEvent = event.event
+        const parsedEvent = event.parsed
+        const streamEvent = parsedEvent.event
 
         // Log ALL events to understand what we're receiving
-        const payloadCase = parsedEvent.payload?.content?.case
+        const payloadCase = streamEvent.payload?.case
 
         // Only log interaction-related events to avoid spam
-        if (payloadCase === 'interactionRequest' || payloadCase === 'interactionResponse') {
-            console.log('[onStreamEvent] 🔍 Event received:', {
-                hash: parsedEvent.hash,
-                payloadCase: payloadCase,
-                timestamp: new Date().toISOString()
-            })
-        }
+        if (payloadCase === 'channelPayload') {
+            const channelPayload = streamEvent.payload.value
+            const contentCase = channelPayload.content?.case
 
-        // Check if this is an interaction request event (form or transaction)
-        if (payloadCase === 'interactionRequest') {
-            const interactionRequest = parsedEvent.payload.content.value
-            const requestId = interactionRequest.request?.id
+            if (contentCase === 'interactionRequest' || contentCase === 'interactionResponse') {
+                console.log('[onStreamEvent] 🔍 Event received:', {
+                    hash: parsedEvent.hashStr,
+                    contentCase: contentCase,
+                    timestamp: new Date().toISOString()
+                })
 
-            console.log('[onStreamEvent] 🎯 InteractionRequest detected:', {
-                eventId: parsedEvent.hash,
-                requestId: requestId,
-                requestCase: interactionRequest.request?.case
-            })
-
-            // If this matches a pending transaction, update its messageId with the real eventId
-            if (requestId) {
-                const pendingTx = await getPendingTransaction(requestId)
-                if (pendingTx) {
-                    console.log('[onStreamEvent] 📝 Found pending tx, current messageId:', pendingTx.messageId, 'stream eventId:', parsedEvent.hash)
-
-                    // Always update with stream eventId (it's the real one)
-                    await savePendingTransaction(
-                        pendingTx.spaceId,
-                        requestId,
-                        pendingTx.type,
-                        pendingTx.userId,
-                        pendingTx.data,
-                        parsedEvent.hash, // Real eventId from stream
-                        pendingTx.channelId
-                    )
-                    console.log('[onStreamEvent] ✅ Updated messageId to:', parsedEvent.hash)
-                } else {
-                    console.log('[onStreamEvent] ⚠️ No pending transaction found for requestId:', requestId)
+                // Check if this is an interaction request event (form or transaction)
+                // Note: This code is kept for future use when Towns Protocol fixes cache invalidation
+                // Currently, removeEvent() doesn't invalidate client cache, so form deletion doesn't work
+                if (contentCase === 'interactionRequest') {
+                    console.log('[onStreamEvent] 🎯 InteractionRequest detected:', {
+                        eventId: parsedEvent.hashStr,
+                        timestamp: new Date().toISOString()
+                    })
+                    // TODO: Re-enable messageId tracking when Towns Protocol fixes cache invalidation bug
+                    // See TOWNS_DUPLICATE_SUBMISSION_PROPOSAL.md for details
                 }
             }
         }
