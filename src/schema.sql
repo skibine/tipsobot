@@ -68,6 +68,9 @@ CREATE TABLE IF NOT EXISTS pending_transactions (
     type VARCHAR(20) NOT NULL, -- 'tip', 'tipsplit', 'donate', 'contribute'
     user_id VARCHAR(66) NOT NULL,
     data JSONB NOT NULL,
+    message_id VARCHAR(100), -- ID of the form message to delete after processing
+    channel_id VARCHAR(100), -- Channel where the form was sent
+    status VARCHAR(20) DEFAULT 'pending', -- 'pending', 'processing', 'completed'
     created_at TIMESTAMP DEFAULT NOW()
 );
 
