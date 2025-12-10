@@ -84,6 +84,14 @@ export async function handleFormResponse(
 
     // Handle Confirm button
     if (clickedButton.id === 'confirm') {
+        // 🔑 ANTI-CACHE PROTECTION: Check if transaction was already processed
+        // This catches cached button clicks after page refresh
+        if (pendingTx.status === 'processed') {
+            console.log('[Form Response] 🛑 CACHED BUTTON! Transaction already processed:', form.requestId)
+            await handler.sendMessage(event.channelId, '⚠️ This transaction was already completed. Please refresh your page.')
+            return
+        }
+
         try {
             const data = pendingTx.data
             const ethPrice = await getEthPrice()
