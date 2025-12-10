@@ -868,12 +868,24 @@ bot.onStreamEvent(async (handler, event) => {
     try {
         const parsedEvent = event.event
 
+        // Log ALL events to understand what we're receiving
+        const payloadCase = parsedEvent.payload?.content?.case
+
+        // Only log interaction-related events to avoid spam
+        if (payloadCase === 'interactionRequest' || payloadCase === 'interactionResponse') {
+            console.log('[onStreamEvent] 🔍 Event received:', {
+                hash: parsedEvent.hash,
+                payloadCase: payloadCase,
+                timestamp: new Date().toISOString()
+            })
+        }
+
         // Check if this is an interaction request event (form or transaction)
-        if (parsedEvent.payload?.content?.case === 'interactionRequest') {
+        if (payloadCase === 'interactionRequest') {
             const interactionRequest = parsedEvent.payload.content.value
             const requestId = interactionRequest.request?.id
 
-            console.log('[onStreamEvent] 🔍 InteractionRequest detected:', {
+            console.log('[onStreamEvent] 🎯 InteractionRequest detected:', {
                 eventId: parsedEvent.hash,
                 requestId: requestId,
                 requestCase: interactionRequest.request?.case
@@ -882,8 +894,10 @@ bot.onStreamEvent(async (handler, event) => {
             // If this matches a pending transaction, update its messageId with the real eventId
             if (requestId) {
                 const pendingTx = await getPendingTransaction(requestId)
-                if (pendingTx && !pendingTx.messageId) {
-                    console.log('[onStreamEvent] 📝 Updating messageId for:', requestId, 'to:', parsedEvent.hash)
+                if (pendingTx) {
+                    console.log('[onStreamEvent] 📝 Found pending tx, current messageId:', pendingTx.messageId, 'stream eventId:', parsedEvent.hash)
+
+                    // Always update with stream eventId (it's the real one)
                     await savePendingTransaction(
                         pendingTx.spaceId,
                         requestId,
@@ -893,6 +907,9 @@ bot.onStreamEvent(async (handler, event) => {
                         parsedEvent.hash, // Real eventId from stream
                         pendingTx.channelId
                     )
+                    console.log('[onStreamEvent] ✅ Updated messageId to:', parsedEvent.hash)
+                } else {
+                    console.log('[onStreamEvent] ⚠️ No pending transaction found for requestId:', requestId)
                 }
             }
         }
