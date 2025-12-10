@@ -86,7 +86,7 @@ export async function handleFormResponse(
                 const amountWei = parseEther(data.ethAmount.toString())
                 const usdValue = data.contributionUsd.toFixed(2)
 
-                await handler.sendInteractionRequest(event.channelId, {
+                const txMessage = await handler.sendInteractionRequest(event.channelId, {
                     case: 'transaction',
                     value: {
                         id: `tx-${form.requestId}`,
@@ -105,12 +105,18 @@ export async function handleFormResponse(
                     }
                 }, hexToBytes(event.userId as `0x${string}`))
 
+                // Save transaction form messageId for later deletion
+                const txMessageId = txMessage?.id || event.eventId
+                data.transactionMessageId = txMessageId
+                await updatePendingTransaction(form.requestId, data)
+                console.log('[Form Response] Transaction form sent, messageId:', txMessageId)
+
             } else if (form.requestId.startsWith('tip-')) {
                 // Regular tip
                 const amountWei = parseEther(data.ethAmount.toString())
                 const usdValue = data.usdAmount.toFixed(2)
 
-                await handler.sendInteractionRequest(event.channelId, {
+                const txMessage = await handler.sendInteractionRequest(event.channelId, {
                     case: 'transaction',
                     value: {
                         id: `tx-${form.requestId}`,
@@ -129,13 +135,21 @@ export async function handleFormResponse(
                     }
                 }, hexToBytes(event.userId as `0x${string}`))
 
+                // Save transaction form messageId for later deletion
+                const txMessageId = txMessage?.id || event.eventId
+                data.transactionMessageId = txMessageId
+                await updatePendingTransaction(form.requestId, data)
+                console.log('[Form Response] Transaction form sent, messageId:', txMessageId)
+
             } else if (form.requestId.startsWith('tipsplit-')) {
-                // Tip split - send multiple transactions
+                // Tip split - send multiple transactions and save their messageIds
+                const transactionMessageIds: string[] = []
+
                 for (const recipient of data.recipients) {
                     const amountWei = parseEther(recipient.ethAmount.toString())
                     const usdValue = recipient.usdAmount.toFixed(2)
 
-                    await handler.sendInteractionRequest(event.channelId, {
+                    const txMessage = await handler.sendInteractionRequest(event.channelId, {
                         case: 'transaction',
                         value: {
                             id: `tx-${form.requestId}-${recipient.userId}`,
@@ -153,14 +167,23 @@ export async function handleFormResponse(
                             }
                         }
                     }, hexToBytes(event.userId as `0x${string}`))
+
+                    // Save each transaction message ID
+                    const txMessageId = txMessage?.id || `${event.eventId}-${recipient.userId}`
+                    transactionMessageIds.push(txMessageId)
                 }
+
+                // Save all transaction form messageIds for later deletion
+                data.transactionMessageIds = transactionMessageIds
+                await updatePendingTransaction(form.requestId, data)
+                console.log('[Form Response] Tipsplit transaction forms sent, messageIds:', transactionMessageIds)
 
             } else if (form.requestId.startsWith('donate-')) {
                 // Donation
                 const amountWei = parseEther(data.ethAmount.toString())
                 const usdValue = data.usdAmount.toFixed(2)
 
-                await handler.sendInteractionRequest(event.channelId, {
+                const txMessage = await handler.sendInteractionRequest(event.channelId, {
                     case: 'transaction',
                     value: {
                         id: `tx-${form.requestId}`,
@@ -178,6 +201,12 @@ export async function handleFormResponse(
                         }
                     }
                 }, hexToBytes(event.userId as `0x${string}`))
+
+                // Save transaction form messageId for later deletion
+                const txMessageId = txMessage?.id || event.eventId
+                data.transactionMessageId = txMessageId
+                await updatePendingTransaction(form.requestId, data)
+                console.log('[Form Response] Transaction form sent, messageId:', txMessageId)
             }
 
             console.log('[Form Response] Transaction request sent successfully')
@@ -292,6 +321,16 @@ export async function handleTransactionResponse(
                 tipsReceived: 1
             })
 
+            // Delete transaction form if messageId exists
+            if (data.transactionMessageId) {
+                try {
+                    await handler.removeEvent(data.channelId, data.transactionMessageId)
+                    console.log('[Transaction Response] ✅ Transaction form deleted, messageId:', data.transactionMessageId)
+                } catch (error) {
+                    console.error('[Transaction Response] ❌ Failed to delete transaction form:', error)
+                }
+            }
+
             // Send success message
             await handler.sendMessage(
                 data.channelId,
@@ -358,6 +397,16 @@ export async function handleTransactionResponse(
                 tipsReceived: 1
             })
 
+            // Delete transaction form if messageId exists
+            if (data.transactionMessageId) {
+                try {
+                    await handler.removeEvent(data.channelId, data.transactionMessageId)
+                    console.log('[Transaction Response] ✅ Transaction form deleted, messageId:', data.transactionMessageId)
+                } catch (error) {
+                    console.error('[Transaction Response] ❌ Failed to delete transaction form:', error)
+                }
+            }
+
             // Send success message
             await handler.sendMessage(
                 data.channelId,
@@ -420,6 +469,18 @@ export async function handleTransactionResponse(
                     })
                 }
 
+                // Delete all transaction forms if messageIds exist
+                if (data.transactionMessageIds && data.transactionMessageIds.length > 0) {
+                    for (const txMessageId of data.transactionMessageIds) {
+                        try {
+                            await handler.removeEvent(data.channelId, txMessageId)
+                            console.log('[Transaction Response] ✅ Tipsplit transaction form deleted, messageId:', txMessageId)
+                        } catch (error) {
+                            console.error('[Transaction Response] ❌ Failed to delete tipsplit transaction form:', error)
+                        }
+                    }
+                }
+
                 // Send success message
                 const recipientList = data.recipients.map((r: any) => `<@${r.userId}>`).join(', ')
                 const mentions = [
@@ -456,6 +517,16 @@ export async function handleTransactionResponse(
                 sentAmount: data.usdAmount,
                 donations: 1
             })
+
+            // Delete transaction form if messageId exists
+            if (data.transactionMessageId) {
+                try {
+                    await handler.removeEvent(data.channelId, data.transactionMessageId)
+                    console.log('[Transaction Response] ✅ Transaction form deleted, messageId:', data.transactionMessageId)
+                } catch (error) {
+                    console.error('[Transaction Response] ❌ Failed to delete transaction form:', error)
+                }
+            }
 
             // Send success message
             await handler.sendMessage(
