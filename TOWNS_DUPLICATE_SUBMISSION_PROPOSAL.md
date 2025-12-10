@@ -116,61 +116,24 @@ Timeline:
 
 ---
 
-## Current Workaround (Required by ALL Bots)
+## Why Bot-Level Solutions Don't Work
 
-Since `removeEvent()` doesn't work for interactive forms, bots must:
+When this bug was first discovered, bot developers attempted various workarounds:
 
-### 1. Implement Transaction State Tracking
-```typescript
-// Store transaction status in database
-const pendingTx = {
-  id: "tx-123",
-  status: 'pending' | 'processed' | 'failed',
-  createdAt: timestamp
-}
-```
+**Attempted approach:**
+1. Track transaction states in database (pending/processed/failed)
+2. Check status before processing button clicks
+3. Detect duplicates after blockchain transaction sent
+4. Keep long transaction history (7+ days) to catch cached clicks
 
-### 2. Check Status Before Processing
-```typescript
-// When user clicks cached button
-if (pendingTx.status === 'processed') {
-    return "⚠️ This was already completed"
-}
-// ⚠️ Partial protection - doesn't prevent blockchain call
-```
+**Why this fails:**
+- ❌ Blockchain transaction is **already sent** before duplicate is detected
+- ❌ Wastes network resources and gas on duplicate calls
+- ❌ Forms **still appear** in UI after refresh - confusing users
+- ❌ Complex infrastructure needed by every bot independently
+- ❌ Doesn't address root cause: cached forms remain interactive
 
-### 3. Detect Duplicates After Blockchain Call
-```typescript
-// After transaction callback received
-if (tx.status === 'processed') {
-    console.log('Duplicate! Ignoring...')
-    return
-}
-// ✅ Works, but blockchain transaction was already sent!
-// ⚠️ Wastes gas and network resources
-```
-
-### 4. Keep Transaction History
-```sql
--- Can't delete processed transactions
--- Must keep for 7+ days to detect cached button clicks
-UPDATE transactions SET status = 'processed'
-WHERE id = $1
-
--- Cleanup only after long retention period
-DELETE FROM transactions
-WHERE created_at < NOW() - INTERVAL '7 days'
-```
-
-### Why This Is a Problem
-
-- ❌ **Complex:** Every bot must implement this independently
-- ❌ **Wasteful:** Blockchain transactions sent twice (caught late)
-- ❌ **Error-prone:** Easy to implement incorrectly
-- ❌ **Bad UX:** Cached forms still appear and work after refresh
-- ❌ **Platform issue:** This should be handled by Towns, not every bot
-
-**Bot developers shouldn't need to work around client-side cache bugs.**
+**Conclusion:** This is a **protocol-level caching issue**. Bot-level workarounds cannot prevent cached forms from reappearing or being clickable after page refresh. The cache invalidation must be fixed in Towns Protocol itself.
 
 ---
 
@@ -184,58 +147,26 @@ WHERE created_at < NOW() - INTERVAL '7 days'
 
 **How it works:**
 ```
-1. Bot calls handler.removeEvent(channelId, eventId)
-2. Server deletes event ✅
-3. Server sends cache invalidation signal to client
-4. Client deletes event from BOTH message store AND interaction store ✅
-5. Page refresh → event is gone → no duplicates ✅
+1. Interactive form is created via sendInteractionRequest()
+2. User clicks button on the form
+3. Server receives interaction response
+4. removeEvent() is called (by bot or automatically)
+5. Server deletes event ✅
+6. Server sends cache invalidation signal to client ← FIX THIS
+7. Client removes form from interaction forms cache ← FIX THIS
+8. Page refresh → form is gone → no duplicates ✅
 ```
 
-**Implementation:**
-- When `removeEvent()` succeeds, invalidate **both** storage mechanisms
-- Remove from IndexedDB/localStorage for interaction forms
-- Sync client cache with server state on removeEvent/redaction events
-- Add TTL for cached forms (auto-expire after 24-48h)
+**What needs to be fixed:**
+- When `removeEvent()` is called for an interaction form, Towns client must invalidate the cached form
+- Sync interaction forms cache with server state on event removal/redaction
+- Optional: Add TTL for cached forms (auto-expire after 24-48h)
 
 **Bot changes needed:** None - works with existing code
 
 ---
 
-### ✅ Solution 2: Add Button Support to `sendMessage()`
-
-**Who implements:** Towns Protocol (API)
-**Complexity:** High
-**Effectiveness:** ⭐⭐⭐⭐⭐ (10/10)
-
-**How it works:**
-```typescript
-// Allow buttons in sendMessage
-await handler.sendMessage(channelId, "Confirm action?", {
-  attachments: [{
-    type: 'buttons',  // ← NEW attachment type
-    buttons: [
-      { id: 'confirm', label: 'Confirm' },
-      { id: 'cancel', label: 'Cancel' }
-    ]
-  }]
-})
-
-// Now buttons use message store → removeEvent() works! ✅
-```
-
-**Implementation:**
-- Add `buttons` attachment type to `PostMessageOpts`
-- Store button forms in message store (same as text messages)
-- Leverage existing cache invalidation mechanism
-- `removeEvent()` works automatically
-
-**Bot changes needed:**
-- Migrate from `sendInteractionRequest` to `sendMessage` with button attachments
-- Backwards compatible - can support both APIs
-
----
-
-### ✅ Solution 3: Transaction Idempotency / Nonce System
+### ✅ Solution 2: Transaction Idempotency / Nonce System
 
 **Who implements:** Towns Protocol + bots
 **Complexity:** Medium
@@ -267,7 +198,7 @@ await handler.sendInteractionRequest(channel, {
 
 ---
 
-### ✅ Solution 4: Form State Tracking in Towns
+### ✅ Solution 3: Form State Tracking in Towns
 
 **Who implements:** Towns Protocol
 **Complexity:** Low-Medium
@@ -300,15 +231,15 @@ if (form.status === 'confirmed' || form.status === 'expired') {
 
 ## Comparison Matrix
 
-| Aspect | Solution 1 | Solution 2 | Solution 3 | Solution 4 |
-|--------|-----------|-----------|-----------|----------|
-| **Fixes root cause** | Yes | Yes | No (workaround) | Partial |
-| **Implementation effort** | Medium | High | Medium | Low-Med |
-| **Effectiveness** | 10/10 | 10/10 | 9/10 | 8/10 |
-| **Bot changes needed** | None | Optional | Yes | Optional |
-| **Backwards compatible** | Yes | Yes | Yes | Yes |
-| **User experience** | Best | Best | Good | Good |
-| **Works immediately** | Yes | No (migration) | Yes | Yes |
+| Aspect | Solution 1 | Solution 2 | Solution 3 |
+|--------|-----------|-----------|----------|
+| **Fixes root cause** | Yes | No (workaround) | Partial |
+| **Implementation effort** | Medium | Medium | Low-Med |
+| **Effectiveness** | 10/10 | 9/10 | 8/10 |
+| **Bot changes needed** | None | Yes | Optional |
+| **Backwards compatible** | Yes | Yes | Yes |
+| **User experience** | Best | Good | Good |
+| **Works immediately** | Yes | Yes | Yes |
 
 ---
 
@@ -319,17 +250,13 @@ if (form.status === 'confirmed' || form.status === 'expired') {
 - ✅ Zero bot changes needed
 - ✅ Works for all existing bots
 - ✅ Best user experience
+- ✅ Minimal implementation effort
 
-**Long-term: Solution 2 (Buttons in sendMessage)**
-- ✅ Unifies architecture
-- ✅ Simplifies API surface
-- ✅ Leverages existing cache mechanism
-- ⚠️ Requires bot migration (can be gradual)
-
-**Secondary safeguard: Solution 3 (Nonce System)**
+**Secondary safeguard: Solution 2 (Nonce System)**
 - ✅ Additional protection layer
 - ✅ Prevents duplicate blockchain transactions
 - ⚠️ Requires bot adoption
+- ⚠️ Doesn't fix root cause (forms still cached)
 
 ---
 
