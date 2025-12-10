@@ -51,14 +51,46 @@ await handler.removeEvent(channelId, eventId)
 // → After F5: form returns from cache and buttons still work! ❌
 ```
 
-### Root Cause
+### Root Cause Analysis
 
-1. **Interactive forms use a separate storage mechanism** (interaction store vs message store)
-2. **`removeEvent()` only invalidates message store cache**, not interaction store
-3. **Buttons cannot be sent via `sendMessage()`** - API limitation
-4. **Result:** Any bot that uses buttons is affected by this bug
+**Server-Side Architecture Issue:**
 
-This is not a bot implementation issue - **it's an architectural gap in Towns Protocol**.
+`sendInteractionRequest()` and `sendMessage()` create **different event types** in Towns Protocol:
+
+```typescript
+// Regular messages - can be deleted
+sendMessage() → ChannelMessage {
+  payload: {
+    case: 'post' | 'reaction' | 'edit' | 'redaction'  // ✅ Supports deletion
+  }
+}
+
+// Interactive forms - CANNOT be deleted
+sendInteractionRequest() → InteractionRequest {
+  recipient: Uint8Array,
+  encryptedData: EncryptedMessage,
+  threadId?: Uint8Array
+}  // ❌ NOT a ChannelMessage!
+```
+
+**Why `removeEvent()` doesn't work:**
+
+```typescript
+// From Towns bot.ts source code:
+const removeEvent = async (streamId, messageId) => {
+  const payload = create(ChannelMessageSchema, {
+    payload: {
+      case: 'redaction',  // ← Only works for ChannelMessage!
+      value: { refEventId: messageId }
+    }
+  })
+  return sendMessageEvent({ streamId, payload })
+}
+```
+
+`removeEvent()` creates a **ChannelMessage with `redaction` payload**, which only works for deleting other ChannelMessages. But `InteractionRequest` is a **completely separate event type** that the redaction mechanism doesn't recognize.
+
+**Key insight:** This is not a cache invalidation bug - it's a **protocol-level type mismatch**. The deletion mechanism (`redaction`) fundamentally cannot delete `InteractionRequest` events because they are different types in the event schema.
 
 ---
 
@@ -133,36 +165,62 @@ When this bug was first discovered, bot developers attempted various workarounds
 - ❌ Complex infrastructure needed by every bot independently
 - ❌ Doesn't address root cause: cached forms remain interactive
 
-**Conclusion:** This is a **protocol-level caching issue**. Bot-level workarounds cannot prevent cached forms from reappearing or being clickable after page refresh. The cache invalidation must be fixed in Towns Protocol itself.
+**Conclusion:** This is a **protocol-level architecture issue**. The `redaction` mechanism only works for `ChannelMessage` events, but `InteractionRequest` is a separate event type. Bot-level workarounds cannot fix this fundamental type mismatch in the protocol.
 
 ---
 
 ## Proposed Solutions
 
-### ✅ Solution 1: Fix Cache Invalidation for `removeEvent()` (RECOMMENDED)
+### ✅ Solution 1: Add Deletion Support for InteractionRequest Events (RECOMMENDED)
 
-**Who implements:** Towns Protocol (client-side)
+**Who implements:** Towns Protocol (server + client)
 **Complexity:** Medium
 **Effectiveness:** ⭐⭐⭐⭐⭐ (10/10)
 
-**How it works:**
-```
-1. Interactive form is created via sendInteractionRequest()
-2. User clicks button on the form
-3. Server receives interaction response
-4. removeEvent() is called (by bot or automatically)
-5. Server deletes event ✅
-6. Server sends cache invalidation signal to client ← FIX THIS
-7. Client removes form from interaction forms cache ← FIX THIS
-8. Page refresh → form is gone → no duplicates ✅
+**The Problem:**
+Currently, `removeEvent()` creates a `ChannelMessage` with `payload.case = 'redaction'`, which only works for deleting other `ChannelMessage` events. `InteractionRequest` is a separate event type that the redaction mechanism doesn't recognize.
+
+**Proposed Fix:**
+
+Extend the `redaction` payload to support `InteractionRequest` events:
+
+```typescript
+// Current (only works for ChannelMessage):
+const removeEvent = async (streamId, messageId) => {
+  const payload = create(ChannelMessageSchema, {
+    payload: {
+      case: 'redaction',
+      value: { refEventId: messageId }  // Only removes ChannelMessage
+    }
+  })
+  return sendMessageEvent({ streamId, payload })
+}
+
+// Proposed fix:
+// When redaction is processed, check BOTH:
+// 1. ChannelMessage events with matching eventId
+// 2. InteractionRequest events with matching eventId
+// Delete whichever is found
 ```
 
-**What needs to be fixed:**
-- When `removeEvent()` is called for an interaction form, Towns client must invalidate the cached form
-- Sync interaction forms cache with server state on event removal/redaction
-- Optional: Add TTL for cached forms (auto-expire after 24-48h)
+**Implementation options:**
 
-**Bot changes needed:** None - works with existing code
+1. **Extend redaction handler** (simplest):
+   - When processing `redaction` payload, check both ChannelMessage and InteractionRequest stores
+   - Delete the event from whichever store contains it
+   - Invalidate client cache for both types
+
+2. **Add InteractionRequest redaction type** (explicit):
+   - Add new payload case: `interactionRedaction`
+   - `removeEvent()` detects event type and uses appropriate redaction
+   - More explicit, but requires API changes
+
+3. **Unify event types** (long-term):
+   - Make `InteractionRequest` a payload case within `ChannelMessage`
+   - Existing redaction mechanism works automatically
+   - Cleaner architecture, but larger refactor
+
+**Bot changes needed:** None - works with existing `removeEvent()` calls
 
 ---
 
@@ -293,40 +351,50 @@ sendMessage() flow:
 └──────┬──────┘
        │
        ▼
-┌────────────────────┐
-│ Message Store      │  ← Regular messages
-│ (IndexedDB)        │
-└────────────────────┘
+┌────────────────────────┐
+│ Creates:               │
+│ ChannelMessage event   │
+│ with payload.case =    │
+│ 'post'                 │
+└────────────────────────┘
        │
-       │  removeEvent()
+       │  removeEvent() creates
+       │  ChannelMessage with
+       │  payload.case = 'redaction'
        ▼
-┌────────────────────┐
-│ Cache invalidated  │  ✅ Works!
-└────────────────────┘
+┌────────────────────────┐
+│ Redaction recognizes   │
+│ ChannelMessage type    │
+│ → Event deleted ✅      │
+└────────────────────────┘
 
 
 sendInteractionRequest() flow:
-┌─────────────────────┐
-│ Bot calls           │
-│ sendInteraction     │
-│ Request             │
-└──────┬──────────────┘
+┌─────────────────────────┐
+│ Bot calls               │
+│ sendInteractionRequest  │
+└──────┬──────────────────┘
        │
        ▼
-┌────────────────────┐
-│ Interaction Store  │  ← Separate storage!
-│ (IndexedDB)        │
-└────────────────────┘
+┌────────────────────────┐
+│ Creates:               │
+│ InteractionRequest     │
+│ (NOT ChannelMessage!)  │
+└────────────────────────┘
        │
-       │  removeEvent()
+       │  removeEvent() creates
+       │  ChannelMessage with
+       │  payload.case = 'redaction'
        ▼
-┌────────────────────┐
-│ Cache NOT          │  ❌ Broken!
-│ invalidated        │
-└────────────────────┘
+┌────────────────────────┐
+│ Redaction only works   │
+│ for ChannelMessage     │
+│ → Type mismatch! ❌     │
+│ → Event NOT deleted ❌  │
+└────────────────────────┘
 ```
 
-**The fix:** Make `removeEvent()` invalidate **both** stores, not just message store.
+**The fix:** Extend `redaction` mechanism to recognize and delete `InteractionRequest` events, not just `ChannelMessage` events.
 
 ---
 
