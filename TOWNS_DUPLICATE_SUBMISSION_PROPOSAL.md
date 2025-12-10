@@ -1,214 +1,300 @@
-# 🚀 Proposal: Preventing Duplicate Form Submissions from Cache
+# 🚀 Proposal: Fix Cache Invalidation for Interactive Forms
 
-**To:** Towns Protocol Team  
-**From:** TipsoBot Developer  
-**Date:** December 10, 2025  
-**Issue:** Users can resubmit cached form confirmations after page refresh, causing duplicate blockchain transactions
+**To:** Towns Protocol Team
+**From:** Bot Developer Community
+**Date:** December 10, 2025
+**Issue:** Interactive forms sent via `sendInteractionRequest()` are not removed from client cache when `removeEvent()` is called
 
 ---
 
 ## Problem Description
 
-### Current Behavior
+### The Architectural Issue
 
-There are **TWO forms** in the transaction flow:
+Towns Protocol has **two different message types** with **different caching behavior**:
 
-**Form #1: Confirmation Dialog (from bot)**
-```
-1. Bot sends form with buttons [Confirm] [Cancel]
-2. User clicks [Confirm]
-3. Bot calls removeEvent() to delete this form ✅
-4. Bot sends blockchain transaction request...
-```
+| Method | Use Case | Cache Invalidation | Supports Buttons |
+|--------|----------|-------------------|-----------------|
+| `sendMessage()` | Text, images, links | ✅ Works correctly | ❌ No |
+| `sendInteractionRequest()` | Forms with buttons | ❌ **BROKEN** | ✅ Yes |
 
-**Form #2: Submit Transaction (from Towns Protocol)**
-```
-5. Towns shows "Submit transaction" form
-6. User clicks [Submit transaction] → blockchain transaction is sent
-7. Bot calls removeEvent() to delete this form ✅
-8. Transaction completes successfully
-```
+**The problem:**
+- Interactive buttons can ONLY be sent via `sendInteractionRequest()`
+- But `removeEvent()` does NOT invalidate the cache for these messages
+- Result: Cached forms reappear after page refresh and remain clickable
 
-**The Problem:**
-```
-9. User refreshes page (F5)
-10. Towns restores BOTH forms from **local browser cache** ❌
-11. User clicks [Submit transaction] again from cache
-12. **Second blockchain transaction is sent to blockchain** ❌
-13. Bot detects duplicate and rejects it (safety check)
-14. But transaction was already submitted to network!
-```
+### Why This Happens
 
-### Real-World Evidence
+```typescript
+// ✅ THIS WORKS: Normal messages
+await handler.sendMessage(channelId, "✅ Success!")
+const result = await handler.sendMessage(...)
+await handler.removeEvent(channelId, result.eventId)
+// → Server deletes event
+// → Client cache is invalidated
+// → After F5: message is gone ✅
 
-From TipsoBot production logs:
+// ❌ THIS DOESN'T WORK: Interactive forms
+await handler.sendInteractionRequest(channelId, {
+  case: 'form',
+  value: {
+    id: "confirm-123",
+    title: "Confirm action?",
+    components: [
+      { id: 'confirm', component: { case: 'button', value: { label: 'Confirm' } } }
+    ]
+  }
+})
+await handler.removeEvent(channelId, eventId)
+// → Server deletes event ✅
+// → Client cache is NOT invalidated ❌
+// → After F5: form returns from cache and buttons still work! ❌
 ```
-07:45:43 - User clicks Confirm → Form deleted with removeEvent ✅
-07:45:55 - Transaction processed → Form deleted with removeEvent ✅
-07:46:36 - User clicks Submit transaction AGAIN (from cache) ❌
-          - Transaction SENT to blockchain again
-          - Duplicate detection blocked it
-          - But network call was made!
-```
-
-### Impact
-
-- ❌ Users can accidentally double-submit transactions from cached forms
-- ❌ Blockchain transactions sent twice (wasting gas/network resources)
-- ❌ Bot's `removeEvent()` works on server, but client cache is NOT invalidated
-- ❌ Duplicate detection is last line of defense (should not be needed)
-- ❌ Users trust is damaged when cached buttons still work
 
 ### Root Cause
 
-**Towns client caches form UI elements locally but doesn't invalidate cache when `removeEvent()` is called.**
+1. **Interactive forms use a separate storage mechanism** (interaction store vs message store)
+2. **`removeEvent()` only invalidates message store cache**, not interaction store
+3. **Buttons cannot be sent via `sendMessage()`** - API limitation
+4. **Result:** Any bot that uses buttons is affected by this bug
 
-The server correctly removes the event, but:
-1. Client cache is NOT synchronized with server
-2. After page refresh, forms are restored from stale cache
-3. No mechanism to mark a form as "processed" or "expired" in cache
-4. `removeEvent()` has no way to trigger cache invalidation
+This is not a bot implementation issue - **it's an architectural gap in Towns Protocol**.
+
+---
+
+## Real-World Evidence
+
+From production bots using interactive forms:
+
+```
+Timeline:
+07:45:43 - User clicks [Confirm] button
+07:45:44 - Bot calls removeEvent() → Server: ✅ Success
+07:45:45 - Bot sends transaction request
+07:45:55 - User submits transaction
+07:45:56 - Bot calls removeEvent() → Server: ✅ Success
+07:46:36 - User refreshes page (F5)
+           ↳ Form reappears from cache ❌
+07:46:40 - User clicks [Submit transaction] AGAIN from cached form
+           ↳ Second blockchain transaction sent to network ❌
+           ↳ Bot detects duplicate and blocks it
+           ↳ But network call was already made!
+```
+
+---
+
+## Who Is Affected?
+
+**Any bot that uses interactive buttons for important or irreversible actions:**
+
+### Financial/Payment Bots
+- Tip bots (like TipsoBot)
+- NFT purchase bots
+- DeFi transaction bots
+- Crowdfunding bots
+- Payment request bots
+
+### Action Confirmation Bots
+- Voting/governance bots
+- Role assignment bots
+- Reward distribution bots
+- Airdrop claim bots
+
+### Resource Management Bots
+- Whitelist/allowlist bots
+- Booking/reservation bots
+- Ticket purchase bots
+- Limited resource allocation
+
+### Gaming/Betting Bots
+- In-game purchases
+- Betting/wagering
+- Loot box opening
+- Any irreversible game action
+
+**Impact:** Every bot using `sendInteractionRequest()` must implement complex duplicate detection workarounds.
+
+---
+
+## Current Workaround (Required by ALL Bots)
+
+Since `removeEvent()` doesn't work for interactive forms, bots must:
+
+### 1. Implement Transaction State Tracking
+```typescript
+// Store transaction status in database
+const pendingTx = {
+  id: "tx-123",
+  status: 'pending' | 'processed' | 'failed',
+  createdAt: timestamp
+}
+```
+
+### 2. Check Status Before Processing
+```typescript
+// When user clicks cached button
+if (pendingTx.status === 'processed') {
+    return "⚠️ This was already completed"
+}
+// ⚠️ Partial protection - doesn't prevent blockchain call
+```
+
+### 3. Detect Duplicates After Blockchain Call
+```typescript
+// After transaction callback received
+if (tx.status === 'processed') {
+    console.log('Duplicate! Ignoring...')
+    return
+}
+// ✅ Works, but blockchain transaction was already sent!
+// ⚠️ Wastes gas and network resources
+```
+
+### 4. Keep Transaction History
+```sql
+-- Can't delete processed transactions
+-- Must keep for 7+ days to detect cached button clicks
+UPDATE transactions SET status = 'processed'
+WHERE id = $1
+
+-- Cleanup only after long retention period
+DELETE FROM transactions
+WHERE created_at < NOW() - INTERVAL '7 days'
+```
+
+### Why This Is a Problem
+
+- ❌ **Complex:** Every bot must implement this independently
+- ❌ **Wasteful:** Blockchain transactions sent twice (caught late)
+- ❌ **Error-prone:** Easy to implement incorrectly
+- ❌ **Bad UX:** Cached forms still appear and work after refresh
+- ❌ **Platform issue:** This should be handled by Towns, not every bot
+
+**Bot developers shouldn't need to work around client-side cache bugs.**
 
 ---
 
 ## Proposed Solutions
 
-### ✅ Solution 1: Cache Invalidation on removeEvent() (RECOMMENDED)
+### ✅ Solution 1: Fix Cache Invalidation for `removeEvent()` (RECOMMENDED)
 
-**Who implements:** Towns client-side
+**Who implements:** Towns Protocol (client-side)
 **Complexity:** Medium
 **Effectiveness:** ⭐⭐⭐⭐⭐ (10/10)
 
 **How it works:**
 ```
-1. Bot calls handler.removeEvent(channelId, messageId)
+1. Bot calls handler.removeEvent(channelId, eventId)
 2. Server deletes event ✅
-3. Towns client receives removeEvent callback
-4. Towns DELETES this message from local browser cache ✅
-5. Page refresh → cached message is gone → no duplicate ✅
+3. Server sends cache invalidation signal to client
+4. Client deletes event from BOTH message store AND interaction store ✅
+5. Page refresh → event is gone → no duplicates ✅
 ```
 
-**Alternative trigger points:**
-```
-// Also invalidate cache when:
-- Transaction status === "confirmed"
-- Event is redacted/removed
-- Form is marked as processed/expired
-```
-
-**Implementation notes:**
-- Sync cache with server state on `removeEvent()` calls
-- When server confirms event deletion, purge from IndexedDB/localStorage
+**Implementation:**
+- When `removeEvent()` succeeds, invalidate **both** storage mechanisms
+- Remove from IndexedDB/localStorage for interaction forms
+- Sync client cache with server state on removeEvent/redaction events
 - Add TTL for cached forms (auto-expire after 24-48h)
-- Track transaction states to prevent re-submission
 
-**Bot impact:** None - works with existing `removeEvent()` calls
+**Bot changes needed:** None - works with existing code
 
 ---
 
-### ✅ Solution 2: Idempotency Key / Nonce System
+### ✅ Solution 2: Add Button Support to `sendMessage()`
 
-**Who implements:** Towns + bots  
-**Complexity:** Medium  
+**Who implements:** Towns Protocol (API)
+**Complexity:** High
+**Effectiveness:** ⭐⭐⭐⭐⭐ (10/10)
+
+**How it works:**
+```typescript
+// Allow buttons in sendMessage
+await handler.sendMessage(channelId, "Confirm action?", {
+  attachments: [{
+    type: 'buttons',  // ← NEW attachment type
+    buttons: [
+      { id: 'confirm', label: 'Confirm' },
+      { id: 'cancel', label: 'Cancel' }
+    ]
+  }]
+})
+
+// Now buttons use message store → removeEvent() works! ✅
+```
+
+**Implementation:**
+- Add `buttons` attachment type to `PostMessageOpts`
+- Store button forms in message store (same as text messages)
+- Leverage existing cache invalidation mechanism
+- `removeEvent()` works automatically
+
+**Bot changes needed:**
+- Migrate from `sendInteractionRequest` to `sendMessage` with button attachments
+- Backwards compatible - can support both APIs
+
+---
+
+### ✅ Solution 3: Transaction Idempotency / Nonce System
+
+**Who implements:** Towns Protocol + bots
+**Complexity:** Medium
 **Effectiveness:** ⭐⭐⭐⭐☆ (9/10)
 
 **How it works:**
 ```typescript
-// Bot sends:
-form: {
-  id: "donate-ABC123",
-  nonce: "unique-uuid-12345"
-}
-
-// First submission:
-Towns sends nonce with transaction → Towns tracks it
-
-// Second submission (from cache):
-Same nonce → Towns detects duplicate
-Return error: "Transaction already submitted with this nonce"
-Don't send to blockchain ✅
-```
-
-**Implementation notes:**
-- Add `nonce` field to form request
-- Track used nonces per user/form
-- TTL for nonces (24-48 hours)
-
-**Bot changes needed:**
-```typescript
-const nonce = crypto.randomUUID()
+// Bot sends with nonce
 await handler.sendInteractionRequest(channel, {
   case: 'form',
   value: {
-    id: 'donate-...',
-    nonce: nonce,  // ← ADD THIS
-    // ... rest of form
+    id: 'confirm-123',
+    nonce: crypto.randomUUID(),  // ← Add nonce
+    // ...
   }
 })
+
+// Towns tracks used nonces
+// Second submission with same nonce → rejected before blockchain call
 ```
+
+**Implementation:**
+- Add `nonce` field to interaction requests
+- Track used nonces per user (24-48h TTL)
+- Reject duplicate nonces BEFORE sending blockchain transactions
+- Return error: "Already submitted"
+
+**Bot changes needed:** Add nonce generation
 
 ---
 
-### ✅ Solution 3: Form Expiration / State Tracking
+### ✅ Solution 4: Form State Tracking in Towns
 
-**Who implements:** Towns  
-**Complexity:** Low-Medium  
+**Who implements:** Towns Protocol
+**Complexity:** Low-Medium
 **Effectiveness:** ⭐⭐⭐⭐☆ (8/10)
 
 **How it works:**
 ```typescript
-// Towns tracks form state:
+// Towns tracks form lifecycle
 forms: Map<formId, {
   status: 'pending' | 'submitted' | 'confirmed' | 'expired',
-  expiresAt: timestamp,
-  submittedAt?: timestamp,
-  confirmedAt?: timestamp
+  expiresAt: timestamp
 }>
 
-// When user clicks button on expired/confirmed form:
-if (form.status === 'confirmed') {
-  showWarning("This transaction was already processed")
-  return  // Don't submit again
+// When user clicks cached button
+if (form.status === 'confirmed' || form.status === 'expired') {
+  showWarning("This form is no longer valid")
+  return  // Don't submit
 }
 ```
 
-**Implementation notes:**
-- Add form lifecycle tracking
-- Mark forms as confirmed after transaction receipt
+**Implementation:**
+- Track form states in Towns Protocol
+- Mark forms as expired after transaction confirmation
 - Auto-expire forms after 24-48h
+- Disable cached buttons for expired forms
 
-**Bot impact:** Minimal - bots can optionally query form state
-
----
-
-### ✅ Solution 4: API Method for Cache Invalidation
-
-**Who implements:** Towns + bots (optional)  
-**Complexity:** Low  
-**Effectiveness:** ⭐⭐⭐☆☆ (7/10)
-
-**How it works:**
-```typescript
-// Bot can explicitly delete cached message:
-await handler.deleteMessage(channelId, messageId)
-// or
-await handler.invalidateCache(messageId)
-
-// Towns removes from browser cache
-// Page refresh → message is gone
-```
-
-**Implementation notes:**
-- Add `deleteMessage()` or `invalidateCache()` to BotHandler API
-- Trigger after successful transaction callback
-- Bot controls when to invalidate
-
-**Bot changes needed:**
-```typescript
-// After transaction processes successfully:
-await handler.invalidateCache(messageId)
-// Message deleted from cache → no duplicate risk
-```
+**Bot changes needed:** Optional - can query form state
 
 ---
 
@@ -216,129 +302,130 @@ await handler.invalidateCache(messageId)
 
 | Aspect | Solution 1 | Solution 2 | Solution 3 | Solution 4 |
 |--------|-----------|-----------|-----------|----------|
-| **Implementation effort** | Medium | Medium | Low-Med | Low |
-| **Effectiveness** | 10/10 | 9/10 | 8/10 | 7/10 |
-| **Bot changes needed** | None | Yes | Optional | Yes |
-| **Backwards compatible** | Yes | Yes* | Yes | Yes |
-| **Can implement now** | Yes | Yes | Yes | Yes |
-| **Long-term solution** | Yes | Yes | Yes | Yes |
-| **User experience** | Best | Good | Good | Good |
-
-*Solution 2 needs bot adoption to work effectively
+| **Fixes root cause** | Yes | Yes | No (workaround) | Partial |
+| **Implementation effort** | Medium | High | Medium | Low-Med |
+| **Effectiveness** | 10/10 | 10/10 | 9/10 | 8/10 |
+| **Bot changes needed** | None | Optional | Yes | Optional |
+| **Backwards compatible** | Yes | Yes | Yes | Yes |
+| **User experience** | Best | Best | Good | Good |
+| **Works immediately** | Yes | No (migration) | Yes | Yes |
 
 ---
 
 ## Recommendation
 
-**Implement Solution 1 (Cache Invalidation) as primary fix:**
-- ✅ Solves problem immediately
+**Primary: Solution 1 (Fix Cache Invalidation)**
+- ✅ Fixes root cause immediately
 - ✅ Zero bot changes needed
-- ✅ Works for all current bots automatically
+- ✅ Works for all existing bots
 - ✅ Best user experience
-- ✅ No backwards compatibility issues
 
-**Then add Solution 2 (Nonce) as secondary safeguard:**
-- Additional defense layer
-- Bots can gradually adopt
-- Provides transaction-level guarantee
+**Long-term: Solution 2 (Buttons in sendMessage)**
+- ✅ Unifies architecture
+- ✅ Simplifies API surface
+- ✅ Leverages existing cache mechanism
+- ⚠️ Requires bot migration (can be gradual)
+
+**Secondary safeguard: Solution 3 (Nonce System)**
+- ✅ Additional protection layer
+- ✅ Prevents duplicate blockchain transactions
+- ⚠️ Requires bot adoption
 
 ---
 
-## Impact
+## Impact of Fixing This
 
-### On Users
-- ✅ No more double transactions
-- ✅ Better trust in bots
-- ✅ Cleaner transaction history
+### For Users
+- ✅ No more confusing cached buttons after refresh
+- ✅ No risk of accidental duplicate transactions
+- ✅ Better trust in Towns Protocol bots
 
-### On Bot Developers
-- ✅ No need to implement duplicate detection
+### For Bot Developers
+- ✅ No complex duplicate detection needed
 - ✅ Simpler, cleaner code
-- ✅ Can focus on features instead of safety
+- ✅ Can focus on features instead of workarounds
+- ✅ Lower barrier to entry for new bots
 
-### On Towns Protocol
-- ✅ More reliable and trustworthy
+### For Towns Protocol
+- ✅ More reliable and trustworthy platform
 - ✅ Attracts more bot developers
-- ✅ Better adoption across ecosystem
+- ✅ Consistent behavior across API surface
+- ✅ Better developer experience
 
 ---
 
-## Questions / Notes
+## Technical Details
 
-1. **Q:** How is cache currently invalidated for other events?  
-   **A:** Could follow same pattern for forms
+### Why `removeEvent()` Works for sendMessage but Not sendInteractionRequest
 
-2. **Q:** Would Solution 1 impact performance?  
-   **A:** Minimal - just tracking transaction states
+```
+sendMessage() flow:
+┌─────────────┐
+│ Bot calls   │
+│ sendMessage │
+└──────┬──────┘
+       │
+       ▼
+┌────────────────────┐
+│ Message Store      │  ← Regular messages
+│ (IndexedDB)        │
+└────────────────────┘
+       │
+       │  removeEvent()
+       ▼
+┌────────────────────┐
+│ Cache invalidated  │  ✅ Works!
+└────────────────────┘
 
-3. **Q:** Backward compatibility?  
-   **A:** All solutions are backwards compatible
 
-4. **Q:** Timeline?  
-   **A:** Solution 1 could be implemented in one sprint
+sendInteractionRequest() flow:
+┌─────────────────────┐
+│ Bot calls           │
+│ sendInteraction     │
+│ Request             │
+└──────┬──────────────┘
+       │
+       ▼
+┌────────────────────┐
+│ Interaction Store  │  ← Separate storage!
+│ (IndexedDB)        │
+└────────────────────┘
+       │
+       │  removeEvent()
+       ▼
+┌────────────────────┐
+│ Cache NOT          │  ❌ Broken!
+│ invalidated        │
+└────────────────────┘
+```
+
+**The fix:** Make `removeEvent()` invalidate **both** stores, not just message store.
 
 ---
 
-## Appendix: Current Workaround (What Bots Do Today)
+## Questions / Discussion
 
-### TipsoBot's Implementation (3 layers of defense)
+1. **Q:** Why not just use `sendMessage()` instead of `sendInteractionRequest()`?
+   **A:** Buttons are ONLY available via `sendInteractionRequest()`. API limitation.
 
-Since `removeEvent()` doesn't invalidate client cache, bots must implement complex duplicate detection:
+2. **Q:** Can bots implement workarounds?
+   **A:** Yes (and they do), but it's complex, wasteful, and shouldn't be necessary.
 
-**Layer 1: Check status before processing**
-```typescript
-// In handleFormResponse (when Confirm clicked)
-if (pendingTx.status === 'processed') {
-    return "⚠️ This transaction was already completed"
-}
-// ⚠️ Partial protection - only catches Confirm button clicks
-// ❌ Doesn't catch cached "Submit transaction" clicks
-```
+3. **Q:** Would Solution 1 impact performance?
+   **A:** Minimal - just syncing cache state with server (already happens for regular messages).
 
-**Layer 2: Duplicate detection in database**
-```typescript
-// In handleTransactionResponse (when blockchain confirms)
-const tx = await getPendingTransaction(requestId)
-if (tx.status === 'processed') {
-    console.log('🛑 DUPLICATE! Ignoring...')
-    return
-}
-// ✅ Works but transaction already sent to blockchain!
-// ⚠️ Wastes network resources and gas
-```
+4. **Q:** Backwards compatibility?
+   **A:** All solutions maintain backwards compatibility.
 
-**Layer 3: Keep processed transactions for 7 days**
-```sql
--- Don't delete, just mark as processed
-UPDATE pending_transactions
-SET status = 'processed'
-WHERE id = $1
-
--- Cleanup old records after 7 days
-DELETE FROM pending_transactions
-WHERE created_at < NOW() - INTERVAL '7 days'
-```
-
-### The Problem
-
-Even with ALL 3 layers:
-- ❌ Cached forms still appear after refresh (can't be prevented by bot)
-- ❌ Blockchain transactions are sent twice (Layer 2 catches it, but too late)
-- ❌ Complex database architecture needed (status tracking, 7-day retention)
-- ❌ Every bot must implement this independently
-- ❌ Still wastes network resources on duplicate blockchain calls
-
-### Why This Should Be in Towns
-
-1. **Security:** Duplicate prevention is a platform concern, not bot responsibility
-2. **DX:** Bot developers shouldn't need complex duplicate detection
-3. **Performance:** Wasted blockchain calls for duplicates that should never happen
-4. **Consistency:** Every bot implements this differently (or not at all)
-5. **Trust:** Users expect forms to disappear after use
-
-**Bots shouldn't need to work around client-side cache bugs. Fix it in Towns Protocol.**
+5. **Q:** Timeline for fix?
+   **A:** Solution 1 could be implemented in 1-2 sprints.
 
 ---
 
-**Contact:** TipsoBot team  
+**This is a platform-level issue affecting all bots that use interactive forms. It should be fixed in Towns Protocol, not worked around by every bot developer.**
+
+---
+
+**Contact:** Bot Developer Community
 **Status:** Open for discussion
+**Priority:** High - affects user trust and transaction safety
