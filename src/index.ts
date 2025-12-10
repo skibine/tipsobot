@@ -322,6 +322,12 @@ bot.onSlashCommand('tip', async (handler, event) => {
 
         // Save pending transaction with messageId and channelId
         const messageId = sentMessage?.id || eventId
+        console.log('[/tip] 🔍 DEBUG sendInteractionRequest response:', {
+            sentMessage: sentMessage,
+            messageId: messageId,
+            eventId: eventId,
+            hasId: !!sentMessage?.id
+        })
         await savePendingTransaction(spaceId, requestId, 'tip', userId, {
             recipientId: recipient.userId,
             recipientName: recipient.displayName,
@@ -854,6 +860,44 @@ bot.onSlashCommand('contribute', async (handler, event) => {
     } catch (error) {
         console.error('[/contribute] Error:', error)
         await handler.sendMessage(channelId, '❌ Failed to process contribution. Please try again.')
+    }
+})
+
+// Track interaction request events to get real eventIds for deletion
+bot.onStreamEvent(async (handler, event) => {
+    try {
+        const parsedEvent = event.event
+
+        // Check if this is an interaction request event (form or transaction)
+        if (parsedEvent.payload?.content?.case === 'interactionRequest') {
+            const interactionRequest = parsedEvent.payload.content.value
+            const requestId = interactionRequest.request?.id
+
+            console.log('[onStreamEvent] 🔍 InteractionRequest detected:', {
+                eventId: parsedEvent.hash,
+                requestId: requestId,
+                requestCase: interactionRequest.request?.case
+            })
+
+            // If this matches a pending transaction, update its messageId with the real eventId
+            if (requestId) {
+                const pendingTx = await getPendingTransaction(requestId)
+                if (pendingTx && !pendingTx.messageId) {
+                    console.log('[onStreamEvent] 📝 Updating messageId for:', requestId, 'to:', parsedEvent.hash)
+                    await savePendingTransaction(
+                        pendingTx.spaceId,
+                        requestId,
+                        pendingTx.type,
+                        pendingTx.userId,
+                        pendingTx.data,
+                        parsedEvent.hash, // Real eventId from stream
+                        pendingTx.channelId
+                    )
+                }
+            }
+        }
+    } catch (error) {
+        console.error('[onStreamEvent] Error:', error)
     }
 })
 

@@ -47,11 +47,19 @@ export async function handleFormResponse(
     // This prevents users from re-clicking cached buttons after page refresh
     if (pendingTx.messageId) {
         try {
+            console.log('[Form Response] 🗑️ Attempting to delete form with removeEvent, messageId:', pendingTx.messageId)
             await handler.removeEvent(event.channelId, pendingTx.messageId)
-            console.log('[Form Response] ✅ Form deleted successfully, messageId:', pendingTx.messageId)
+            console.log('[Form Response] ✅ Form deleted with removeEvent')
         } catch (error) {
-            console.error('[Form Response] ❌ Failed to delete form:', error)
-            // Continue processing even if deletion fails
+            console.error('[Form Response] ❌ removeEvent failed:', error)
+            // Try adminRemoveEvent as fallback
+            try {
+                console.log('[Form Response] 🗑️ Attempting adminRemoveEvent as fallback...')
+                await handler.adminRemoveEvent(event.channelId, pendingTx.messageId)
+                console.log('[Form Response] ✅ Form deleted with adminRemoveEvent')
+            } catch (adminError) {
+                console.error('[Form Response] ❌ adminRemoveEvent also failed:', adminError)
+            }
         }
     } else {
         console.log('[Form Response] ⚠️ No messageId found, cannot delete form')
@@ -324,10 +332,19 @@ export async function handleTransactionResponse(
             // Delete transaction form if messageId exists
             if (data.transactionMessageId) {
                 try {
+                    console.log('[Transaction Response] 🗑️ Attempting to delete transaction form, messageId:', data.transactionMessageId)
                     await handler.removeEvent(data.channelId, data.transactionMessageId)
-                    console.log('[Transaction Response] ✅ Transaction form deleted, messageId:', data.transactionMessageId)
+                    console.log('[Transaction Response] ✅ Transaction form deleted with removeEvent')
                 } catch (error) {
-                    console.error('[Transaction Response] ❌ Failed to delete transaction form:', error)
+                    console.error('[Transaction Response] ❌ removeEvent failed:', error)
+                    // Try adminRemoveEvent as fallback
+                    try {
+                        console.log('[Transaction Response] 🗑️ Attempting adminRemoveEvent as fallback...')
+                        await handler.adminRemoveEvent(data.channelId, data.transactionMessageId)
+                        console.log('[Transaction Response] ✅ Transaction form deleted with adminRemoveEvent')
+                    } catch (adminError) {
+                        console.error('[Transaction Response] ❌ adminRemoveEvent also failed:', adminError)
+                    }
                 }
             }
 
@@ -400,10 +417,19 @@ export async function handleTransactionResponse(
             // Delete transaction form if messageId exists
             if (data.transactionMessageId) {
                 try {
+                    console.log('[Transaction Response] 🗑️ Attempting to delete transaction form, messageId:', data.transactionMessageId)
                     await handler.removeEvent(data.channelId, data.transactionMessageId)
-                    console.log('[Transaction Response] ✅ Transaction form deleted, messageId:', data.transactionMessageId)
+                    console.log('[Transaction Response] ✅ Transaction form deleted with removeEvent')
                 } catch (error) {
-                    console.error('[Transaction Response] ❌ Failed to delete transaction form:', error)
+                    console.error('[Transaction Response] ❌ removeEvent failed:', error)
+                    // Try adminRemoveEvent as fallback
+                    try {
+                        console.log('[Transaction Response] 🗑️ Attempting adminRemoveEvent as fallback...')
+                        await handler.adminRemoveEvent(data.channelId, data.transactionMessageId)
+                        console.log('[Transaction Response] ✅ Transaction form deleted with adminRemoveEvent')
+                    } catch (adminError) {
+                        console.error('[Transaction Response] ❌ adminRemoveEvent also failed:', adminError)
+                    }
                 }
             }
 
@@ -473,10 +499,19 @@ export async function handleTransactionResponse(
                 if (data.transactionMessageIds && data.transactionMessageIds.length > 0) {
                     for (const txMessageId of data.transactionMessageIds) {
                         try {
+                            console.log('[Transaction Response] 🗑️ Attempting to delete tipsplit transaction form, messageId:', txMessageId)
                             await handler.removeEvent(data.channelId, txMessageId)
-                            console.log('[Transaction Response] ✅ Tipsplit transaction form deleted, messageId:', txMessageId)
+                            console.log('[Transaction Response] ✅ Tipsplit transaction form deleted with removeEvent')
                         } catch (error) {
-                            console.error('[Transaction Response] ❌ Failed to delete tipsplit transaction form:', error)
+                            console.error('[Transaction Response] ❌ removeEvent failed:', error)
+                            // Try adminRemoveEvent as fallback
+                            try {
+                                console.log('[Transaction Response] 🗑️ Attempting adminRemoveEvent as fallback...')
+                                await handler.adminRemoveEvent(data.channelId, txMessageId)
+                                console.log('[Transaction Response] ✅ Tipsplit transaction form deleted with adminRemoveEvent')
+                            } catch (adminError) {
+                                console.error('[Transaction Response] ❌ adminRemoveEvent also failed:', adminError)
+                            }
                         }
                     }
                 }
@@ -521,10 +556,19 @@ export async function handleTransactionResponse(
             // Delete transaction form if messageId exists
             if (data.transactionMessageId) {
                 try {
+                    console.log('[Transaction Response] 🗑️ Attempting to delete transaction form, messageId:', data.transactionMessageId)
                     await handler.removeEvent(data.channelId, data.transactionMessageId)
-                    console.log('[Transaction Response] ✅ Transaction form deleted, messageId:', data.transactionMessageId)
+                    console.log('[Transaction Response] ✅ Transaction form deleted with removeEvent')
                 } catch (error) {
-                    console.error('[Transaction Response] ❌ Failed to delete transaction form:', error)
+                    console.error('[Transaction Response] ❌ removeEvent failed:', error)
+                    // Try adminRemoveEvent as fallback
+                    try {
+                        console.log('[Transaction Response] 🗑️ Attempting adminRemoveEvent as fallback...')
+                        await handler.adminRemoveEvent(data.channelId, data.transactionMessageId)
+                        console.log('[Transaction Response] ✅ Transaction form deleted with adminRemoveEvent')
+                    } catch (adminError) {
+                        console.error('[Transaction Response] ❌ adminRemoveEvent also failed:', adminError)
+                    }
                 }
             }
 
