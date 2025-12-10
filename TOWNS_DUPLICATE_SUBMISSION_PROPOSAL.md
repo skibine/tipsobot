@@ -11,48 +11,98 @@
 
 ### Current Behavior
 
+There are **TWO forms** in the transaction flow:
+
+**Form #1: Confirmation Dialog (from bot)**
+```
 1. Bot sends form with buttons [Confirm] [Cancel]
-2. User clicks [Confirm] → blockchain transaction is sent (confirmed by Towns)
-3. User refreshes page (F5)
-4. Towns restores form from **local browser cache**
-5. User clicks [Confirm] again → **second blockchain transaction is sent** ❌
+2. User clicks [Confirm]
+3. Bot calls removeEvent() to delete this form ✅
+4. Bot sends blockchain transaction request...
+```
+
+**Form #2: Submit Transaction (from Towns Protocol)**
+```
+5. Towns shows "Submit transaction" form
+6. User clicks [Submit transaction] → blockchain transaction is sent
+7. Bot calls removeEvent() to delete this form ✅
+8. Transaction completes successfully
+```
+
+**The Problem:**
+```
+9. User refreshes page (F5)
+10. Towns restores BOTH forms from **local browser cache** ❌
+11. User clicks [Submit transaction] again from cache
+12. **Second blockchain transaction is sent to blockchain** ❌
+13. Bot detects duplicate and rejects it (safety check)
+14. But transaction was already submitted to network!
+```
+
+### Real-World Evidence
+
+From TipsoBot production logs:
+```
+07:45:43 - User clicks Confirm → Form deleted with removeEvent ✅
+07:45:55 - Transaction processed → Form deleted with removeEvent ✅
+07:46:36 - User clicks Submit transaction AGAIN (from cache) ❌
+          - Transaction SENT to blockchain again
+          - Duplicate detection blocked it
+          - But network call was made!
+```
 
 ### Impact
 
-- Users get double-charged for transactions
-- Duplicate events in blockchain
-- Bots have no way to prevent this on their side
-- Users trust is damaged
+- ❌ Users can accidentally double-submit transactions from cached forms
+- ❌ Blockchain transactions sent twice (wasting gas/network resources)
+- ❌ Bot's `removeEvent()` works on server, but client cache is NOT invalidated
+- ❌ Duplicate detection is last line of defense (should not be needed)
+- ❌ Users trust is damaged when cached buttons still work
 
 ### Root Cause
 
-Towns caches form UI elements locally but doesn't invalidate them after successful transactions. The protocol has no built-in mechanism to mark a form as "processed" or "expired."
+**Towns client caches form UI elements locally but doesn't invalidate cache when `removeEvent()` is called.**
+
+The server correctly removes the event, but:
+1. Client cache is NOT synchronized with server
+2. After page refresh, forms are restored from stale cache
+3. No mechanism to mark a form as "processed" or "expired" in cache
+4. `removeEvent()` has no way to trigger cache invalidation
 
 ---
 
 ## Proposed Solutions
 
-### ✅ Solution 1: Cache Invalidation After Confirmation (RECOMMENDED)
+### ✅ Solution 1: Cache Invalidation on removeEvent() (RECOMMENDED)
 
-**Who implements:** Towns client-side  
-**Complexity:** Medium  
+**Who implements:** Towns client-side
+**Complexity:** Medium
 **Effectiveness:** ⭐⭐⭐⭐⭐ (10/10)
 
 **How it works:**
 ```
-1. User clicks [Submit]
-2. Form is sent to blockchain
-3. Towns receives transaction confirmation from blockchain
-4. Towns DELETES this form from local cache
-5. Page refresh → form is gone → no duplicate
+1. Bot calls handler.removeEvent(channelId, messageId)
+2. Server deletes event ✅
+3. Towns client receives removeEvent callback
+4. Towns DELETES this message from local browser cache ✅
+5. Page refresh → cached message is gone → no duplicate ✅
+```
+
+**Alternative trigger points:**
+```
+// Also invalidate cache when:
+- Transaction status === "confirmed"
+- Event is redacted/removed
+- Form is marked as processed/expired
 ```
 
 **Implementation notes:**
-- Track transaction state in cache
-- When `transaction.status === "confirmed"`, remove form from cache
-- Add cleanup for old cached forms (>24h)
+- Sync cache with server state on `removeEvent()` calls
+- When server confirms event deletion, purge from IndexedDB/localStorage
+- Add TTL for cached forms (auto-expire after 24-48h)
+- Track transaction states to prevent re-submission
 
-**Bot impact:** None - no changes needed
+**Bot impact:** None - works with existing `removeEvent()` calls
 
 ---
 
@@ -229,15 +279,67 @@ await handler.invalidateCache(messageId)
 
 ---
 
-## Appendix: Current Workaround
+## Appendix: Current Workaround (What Bots Do Today)
 
-Current bots have to:
-1. Save transaction state in database
-2. Check if transaction already processed on every callback
-3. Manually track processed transactions for 7 days
-4. Hope users don't submit duplicates
+### TipsoBot's Implementation (4 layers of defense)
 
-This should be built into Towns, not every bot.
+**Layer 1: Try to delete forms**
+```typescript
+// After user clicks button or transaction completes
+await handler.removeEvent(channelId, messageId)
+// ❌ Doesn't work - client cache not invalidated
+```
+
+**Layer 2: Check status before processing**
+```typescript
+// In handleFormResponse (when Confirm clicked)
+if (pendingTx.status === 'processed') {
+    return "⚠️ This transaction was already completed"
+}
+// ⚠️ Partial protection - only catches Confirm button
+```
+
+**Layer 3: Duplicate detection in database**
+```typescript
+// In handleTransactionResponse (when blockchain confirms)
+const tx = await getPendingTransaction(requestId)
+if (tx.status === 'processed') {
+    console.log('🛑 DUPLICATE! Ignoring...')
+    return
+}
+// ✅ Works but transaction already sent to blockchain!
+```
+
+**Layer 4: Keep processed transactions for 7 days**
+```sql
+-- Don't delete, just mark as processed
+UPDATE pending_transactions
+SET status = 'processed'
+WHERE id = $1
+
+-- Cleanup old records after 7 days
+DELETE FROM pending_transactions
+WHERE created_at < NOW() - INTERVAL '7 days'
+```
+
+### The Problem
+
+Even with ALL 4 layers:
+- ❌ Cached forms still appear after refresh
+- ❌ Blockchain transactions are sent twice (Layer 3 catches it, but too late)
+- ❌ Complex database architecture needed
+- ❌ Every bot must implement this
+- ❌ Still a race condition window
+
+### Why This Should Be in Towns
+
+1. **Security:** Duplicate prevention is a platform concern
+2. **DX:** Bot developers shouldn't need 4 layers of protection
+3. **Performance:** Wasted blockchain calls for duplicate detection
+4. **Consistency:** Every bot implements this differently
+5. **Trust:** Users expect forms to disappear after use
+
+**This workaround is a band-aid. The real fix belongs in Towns Protocol.**
 
 ---
 
