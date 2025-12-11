@@ -293,9 +293,11 @@ bot.onSlashCommand('tip', async (handler, event) => {
             return
         }
 
-        // Store pending tip in database
-        const requestId = `tip-${eventId}`
-        const sentMessage = await handler.sendInteractionRequest(channelId, {
+        // Store pending tip in database - encode channelId in requestId
+        const requestId = `tip-${channelId}-${eventId}`
+        
+        // Send to DM instead of channel
+        const sentMessage = await handler.sendInteractionRequest(userId, {
             case: 'form',
             value: {
                 id: requestId,
@@ -320,6 +322,9 @@ bot.onSlashCommand('tip', async (handler, event) => {
             }
         }, hexToBytes(userId as `0x${string}`))
 
+        // Notify in channel that confirmation was sent to DM
+        await handler.sendMessage(channelId, '📬 Confirmation sent to your DM!')
+
         // Save pending transaction with messageId and channelId
         const messageId = sentMessage?.id || eventId
         await savePendingTransaction(spaceId, requestId, 'tip', userId, {
@@ -331,7 +336,7 @@ bot.onSlashCommand('tip', async (handler, event) => {
             channelId
         }, messageId, channelId)
 
-        console.log('[/tip] Confirmation dialog sent')
+        console.log('[/tip] Confirmation dialog sent to DM')
 
     } catch (error) {
         console.error('[/tip] Error:', error)
@@ -428,11 +433,14 @@ bot.onSlashCommand('tipsplit', async (handler, event) => {
             .map(r => `  • $${splitUsd.toFixed(2)} (~${r.amount.toFixed(6)} ETH) → <@${r.userId}>`)
             .join('\n')
 
-        // Send confirmation dialog
-        const sentMessage = await handler.sendInteractionRequest(channelId, {
+        // Encode channelId in requestId
+        const requestId = `tipsplit-${channelId}-${eventId}`
+
+        // Send confirmation dialog to DM
+        const sentMessage = await handler.sendInteractionRequest(userId, {
             case: 'form',
             value: {
-                id: `tipsplit-${eventId}`,
+                id: requestId,
                 title: `💸 Confirm Split Tip`,
                 description: `Split $${totalUsd.toFixed(2)} (~${totalEth.toFixed(6)} ETH) between ${mentions.length} users:\n\n${breakdown}`,
                 components: [
@@ -454,8 +462,10 @@ bot.onSlashCommand('tipsplit', async (handler, event) => {
             }
         }, hexToBytes(userId as `0x${string}`))
 
+        // Notify in channel
+        await handler.sendMessage(channelId, '📬 Confirmation sent to your DM!')
+
         // Store pending tip in database
-        const requestId = `tipsplit-${eventId}`
         const messageId = sentMessage?.id || eventId
         await savePendingTransaction(spaceId, requestId, 'tipsplit', userId, {
             recipients: recipients.map(r => ({
@@ -526,11 +536,14 @@ bot.onSlashCommand('donate', async (handler, event) => {
             return
         }
 
-        // Send confirmation dialog
-        const sentMessage = await handler.sendInteractionRequest(channelId, {
+        // Encode channelId in requestId
+        const requestId = `donate-${channelId}-${eventId}`
+
+        // Send confirmation dialog to DM
+        const sentMessage = await handler.sendInteractionRequest(userId, {
             case: 'form',
             value: {
-                id: `donate-${eventId}`,
+                id: requestId,
                 title: `❤️ Confirm Donation`,
                 description: `Donate $${usdAmount.toFixed(2)} (~${ethAmount.toFixed(6)} ETH) to support TipsoBot?\n\nYour support helps keep this bot running! 🙏`,
                 components: [
@@ -552,8 +565,10 @@ bot.onSlashCommand('donate', async (handler, event) => {
             }
         }, hexToBytes(userId as `0x${string}`))
 
+        // Notify in channel
+        await handler.sendMessage(channelId, '📬 Confirmation sent to your DM!')
+
         // Store pending donation in database
-        const requestId = `donate-${eventId}`
         const messageId = sentMessage?.id || eventId
         await savePendingTransaction(spaceId, requestId, 'donate', userId, {
             usdAmount,
@@ -809,11 +824,14 @@ bot.onSlashCommand('contribute', async (handler, event) => {
             return
         }
 
-        // Send confirmation dialog
-        const sentMessage = await handler.sendInteractionRequest(channelId, {
+        // Encode channelId in contributionId
+        const contributionId = `contrib-${channelId}-${eventId}`
+
+        // Send confirmation dialog to DM
+        const sentMessage = await handler.sendInteractionRequest(userId, {
             case: 'form',
             value: {
-                id: `contrib-${eventId}`,
+                id: contributionId,
                 title: `💰 Confirm Contribution`,
                 description: `Contribute $${amount.toFixed(2)} (~${ethAmount.toFixed(6)} ETH) to:\n\n"${paymentRequest.description}"\n\nCreated by: <@${paymentRequest.creator_id}>`,
                 components: [
@@ -835,8 +853,10 @@ bot.onSlashCommand('contribute', async (handler, event) => {
             }
         }, hexToBytes(userId as `0x${string}`))
 
+        // Notify in channel
+        await handler.sendMessage(channelId, '📬 Confirmation sent to your DM!')
+
         // Store pending contribution in database (will be processed after transaction confirmation)
-        const contributionId = `contrib-${eventId}`
         const messageId = sentMessage?.id || eventId
         await savePendingTransaction(spaceId, contributionId, 'contribute', userId, {
             requestId,
