@@ -62,7 +62,7 @@ CREATE TABLE IF NOT EXISTS pending_transactions_new (
 -- Step 4: Migrate data
 -- Use a default space_id for all existing data
 -- You should replace 'DEFAULT_SPACE_ID' with your actual space_id if you have one
-LET default_space_id = 'DEFAULT_SPACE_ID';
+LET default_space_id = '0x7d43a7907883f99842940214052b1d268de8f5c1';
 
 -- Migrate global_stats
 INSERT INTO global_stats_new (space_id, total_tips_volume, total_tips_count, total_donations_volume, total_donations_count, total_crowdfunding_volume, total_crowdfunding_count, updated_at)

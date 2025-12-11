@@ -30,4 +30,4 @@ coverage/
 
 # OS
 .DS_Store
-Thumbs.db
+Thumbs.dbbackup_*.sql
