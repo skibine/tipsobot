@@ -331,6 +331,7 @@ export async function getPendingTransaction(id: string) {
         userId: row.user_id,
         data: typeof row.data === 'string' ? JSON.parse(row.data) : row.data,
         messageId: row.message_id,
+        transactionMessageId: row.transaction_message_id,
         channelId: row.channel_id,
         status: row.status,
         createdAt: row.created_at

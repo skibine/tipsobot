@@ -386,10 +386,10 @@ export async function handleTransactionResponse(
             await updatePendingTransactionStatus(originalRequestId, 'processed')
 
             // Delete transaction confirmation form
-            console.log('[Transaction Response] pendingTx.transaction_message_id:', pendingTx.transaction_message_id)
-            if (pendingTx.transaction_message_id) {
+            console.log('[Transaction Response] pendingTx.transactionMessageId:', pendingTx.transactionMessageId)
+            if (pendingTx.transactionMessageId) {
                 try {
-                    await handler.removeEvent(data.channelId, pendingTx.transaction_message_id)
+                    await handler.removeEvent(data.channelId, pendingTx.transactionMessageId)
                     console.log('[Transaction Response] ✅ Transaction form deleted successfully')
                 } catch (error) {
                     console.error('[Transaction Response] ❌ Failed to delete transaction form:', error)
@@ -437,10 +437,10 @@ export async function handleTransactionResponse(
             await updatePendingTransactionStatus(originalRequestId, 'processed')
 
             // Delete transaction confirmation form
-            console.log('[Transaction Response] pendingTx.transaction_message_id:', pendingTx.transaction_message_id)
-            if (pendingTx.transaction_message_id) {
+            console.log('[Transaction Response] pendingTx.transactionMessageId:', pendingTx.transactionMessageId)
+            if (pendingTx.transactionMessageId) {
                 try {
-                    await handler.removeEvent(data.channelId, pendingTx.transaction_message_id)
+                    await handler.removeEvent(data.channelId, pendingTx.transactionMessageId)
                     console.log('[Transaction Response] ✅ Transaction form deleted successfully')
                 } catch (error) {
                     console.error('[Transaction Response] ❌ Failed to delete transaction form:', error)
@@ -516,10 +516,10 @@ export async function handleTransactionResponse(
                 await updatePendingTransactionStatus(originalRequestId, 'processed')
 
                 // Delete transaction confirmation form
-                console.log('[Transaction Response] pendingTx.transaction_message_id:', pendingTx.transaction_message_id)
-                if (pendingTx.transaction_message_id) {
+                console.log('[Transaction Response] pendingTx.transactionMessageId:', pendingTx.transactionMessageId)
+                if (pendingTx.transactionMessageId) {
                     try {
-                        await handler.removeEvent(data.channelId, pendingTx.transaction_message_id)
+                        await handler.removeEvent(data.channelId, pendingTx.transactionMessageId)
                         console.log('[Transaction Response] ✅ Transaction form deleted successfully')
                     } catch (error) {
                         console.error('[Transaction Response] ❌ Failed to delete transaction form:', error)
@@ -561,10 +561,10 @@ export async function handleTransactionResponse(
             await updatePendingTransactionStatus(originalRequestId, 'processed')
 
             // Delete transaction confirmation form
-            console.log('[Transaction Response] pendingTx.transaction_message_id:', pendingTx.transaction_message_id)
-            if (pendingTx.transaction_message_id) {
+            console.log('[Transaction Response] pendingTx.transactionMessageId:', pendingTx.transactionMessageId)
+            if (pendingTx.transactionMessageId) {
                 try {
-                    await handler.removeEvent(data.channelId, pendingTx.transaction_message_id)
+                    await handler.removeEvent(data.channelId, pendingTx.transactionMessageId)
                     console.log('[Transaction Response] ✅ Transaction form deleted successfully')
                 } catch (error) {
                     console.error('[Transaction Response] ❌ Failed to delete transaction form:', error)
