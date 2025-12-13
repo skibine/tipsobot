@@ -43,20 +43,6 @@ export async function handleFormResponse(
         messageId: pendingTx.messageId
     })
 
-    // 🔑 KEY FIX: Delete the form IMMEDIATELY after any button click
-    // This prevents users from re-clicking cached buttons after page refresh
-    if (pendingTx.messageId) {
-        try {
-            await handler.removeEvent(event.channelId, pendingTx.messageId)
-            console.log('[Form Response] ✅ Form deleted successfully, messageId:', pendingTx.messageId)
-        } catch (error) {
-            console.error('[Form Response] ❌ Failed to delete form:', error)
-            // Continue processing even if deletion fails
-        }
-    } else {
-        console.log('[Form Response] ⚠️ No messageId found, cannot delete form')
-    }
-
     // Find which button was clicked
     const clickedButton = form.components.find((c: any) => c.component.case === 'button')
     console.log('[Form Response] Button clicked:', clickedButton?.id)
@@ -71,6 +57,16 @@ export async function handleFormResponse(
         await deletePendingTransaction(form.requestId)
         await handler.sendMessage(event.channelId, '❌ Cancelled.')
         console.log('[Form Response] Transaction cancelled by user')
+
+        // Delete the form after cancellation
+        if (pendingTx.messageId) {
+            try {
+                await handler.removeEvent(event.channelId, pendingTx.messageId)
+                console.log('[Form Response] ✅ Form deleted after cancellation, messageId:', pendingTx.messageId)
+            } catch (error) {
+                console.error('[Form Response] ❌ Failed to delete form after cancellation:', error)
+            }
+        }
         return
     }
 
@@ -181,6 +177,20 @@ export async function handleFormResponse(
             }
 
             console.log('[Form Response] Transaction request sent successfully')
+
+            // 🔑 Delete the form AFTER transaction request is sent
+            // This prevents blocking if removeEvent times out
+            if (pendingTx.messageId) {
+                try {
+                    await handler.removeEvent(event.channelId, pendingTx.messageId)
+                    console.log('[Form Response] ✅ Form deleted successfully, messageId:', pendingTx.messageId)
+                } catch (error) {
+                    console.error('[Form Response] ❌ Failed to delete form:', error)
+                    // Continue - form deletion failure is not critical
+                }
+            } else {
+                console.log('[Form Response] ⚠️ No messageId found, cannot delete form')
+            }
 
         } catch (error) {
             console.error('[Form Response] Error processing confirmation:', error)
