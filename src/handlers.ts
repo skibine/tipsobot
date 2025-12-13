@@ -386,6 +386,7 @@ export async function handleTransactionResponse(
             await updatePendingTransactionStatus(originalRequestId, 'processed')
 
             // Delete transaction confirmation form
+            console.log('[Transaction Response] pendingTx.transaction_message_id:', pendingTx.transaction_message_id)
             if (pendingTx.transaction_message_id) {
                 try {
                     await handler.removeEvent(data.channelId, pendingTx.transaction_message_id)
@@ -393,6 +394,8 @@ export async function handleTransactionResponse(
                 } catch (error) {
                     console.error('[Transaction Response] ❌ Failed to delete transaction form:', error)
                 }
+            } else {
+                console.log('[Transaction Response] ⚠️ No transaction_message_id found, cannot delete transaction form')
             }
 
             console.log('[Transaction Response] ✅ Contribution successfully processed!')
@@ -434,6 +437,7 @@ export async function handleTransactionResponse(
             await updatePendingTransactionStatus(originalRequestId, 'processed')
 
             // Delete transaction confirmation form
+            console.log('[Transaction Response] pendingTx.transaction_message_id:', pendingTx.transaction_message_id)
             if (pendingTx.transaction_message_id) {
                 try {
                     await handler.removeEvent(data.channelId, pendingTx.transaction_message_id)
@@ -441,6 +445,8 @@ export async function handleTransactionResponse(
                 } catch (error) {
                     console.error('[Transaction Response] ❌ Failed to delete transaction form:', error)
                 }
+            } else {
+                console.log('[Transaction Response] ⚠️ No transaction_message_id found, cannot delete transaction form')
             }
 
             console.log('[Transaction Response] ✅ Tip successfully processed!')
@@ -510,6 +516,7 @@ export async function handleTransactionResponse(
                 await updatePendingTransactionStatus(originalRequestId, 'processed')
 
                 // Delete transaction confirmation form
+                console.log('[Transaction Response] pendingTx.transaction_message_id:', pendingTx.transaction_message_id)
                 if (pendingTx.transaction_message_id) {
                     try {
                         await handler.removeEvent(data.channelId, pendingTx.transaction_message_id)
@@ -517,6 +524,8 @@ export async function handleTransactionResponse(
                     } catch (error) {
                         console.error('[Transaction Response] ❌ Failed to delete transaction form:', error)
                     }
+                } else {
+                    console.log('[Transaction Response] ⚠️ No transaction_message_id found, cannot delete transaction form')
                 }
 
                 console.log('[Transaction Response] ✅ Tipsplit successfully processed!')
@@ -552,6 +561,7 @@ export async function handleTransactionResponse(
             await updatePendingTransactionStatus(originalRequestId, 'processed')
 
             // Delete transaction confirmation form
+            console.log('[Transaction Response] pendingTx.transaction_message_id:', pendingTx.transaction_message_id)
             if (pendingTx.transaction_message_id) {
                 try {
                     await handler.removeEvent(data.channelId, pendingTx.transaction_message_id)
@@ -559,6 +569,8 @@ export async function handleTransactionResponse(
                 } catch (error) {
                     console.error('[Transaction Response] ❌ Failed to delete transaction form:', error)
                 }
+            } else {
+                console.log('[Transaction Response] ⚠️ No transaction_message_id found, cannot delete transaction form')
             }
 
             console.log('[Transaction Response] ✅ Donation successfully processed!')
