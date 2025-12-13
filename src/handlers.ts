@@ -197,14 +197,18 @@ export async function handleTransactionResponse(
 ) {
     const transaction = event.response.payload.content.value
     const txId = transaction.requestId
-    const txHash = transaction.hash || transaction.txHash || transaction.transactionHash
+
+    // Try multiple fields for transaction hash
+    const txHash = transaction.hash || transaction.txHash || transaction.transactionHash || transaction.receipt?.hash || transaction.receipt?.transactionHash
     const spaceId = event.spaceId
 
     console.log('[Transaction Response] ========================')
     console.log('[Transaction Response] Received transaction result for:', txId)
     console.log('[Transaction Response] Transaction hash:', txHash)
     console.log('[Transaction Response] SpaceId:', spaceId)
+    console.log('[Transaction Response] Full event:', JSON.stringify(event, null, 2))
     console.log('[Transaction Response] Full transaction object:', JSON.stringify(transaction, null, 2))
+    console.log('[Transaction Response] Available transaction keys:', Object.keys(transaction))
     console.log('[Transaction Response] ========================')
 
     try {

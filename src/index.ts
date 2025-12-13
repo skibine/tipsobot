@@ -322,7 +322,12 @@ bot.onSlashCommand('tip', async (handler, event) => {
 
         // Save pending transaction with messageId and channelId
         // Use eventId from sentMessage (actual event ID in stream) instead of id
+        console.log('[/tip] sentMessage object:', JSON.stringify(sentMessage, null, 2))
+        console.log('[/tip] sentMessage?.eventId:', sentMessage?.eventId)
+        console.log('[/tip] sentMessage?.id:', sentMessage?.id)
         const messageId = sentMessage?.eventId || sentMessage?.id || eventId
+        console.log('[/tip] Final messageId to save:', messageId)
+
         await savePendingTransaction(spaceId, requestId, 'tip', userId, {
             recipientId: recipient.userId,
             recipientName: recipient.displayName,
@@ -332,7 +337,7 @@ bot.onSlashCommand('tip', async (handler, event) => {
             channelId
         }, messageId, channelId)
 
-        console.log('[/tip] Confirmation dialog sent')
+        console.log('[/tip] Confirmation dialog sent, saved to DB with messageId:', messageId)
 
     } catch (error) {
         console.error('[/tip] Error:', error)
@@ -864,7 +869,10 @@ bot.onSlashCommand('contribute', async (handler, event) => {
 // Handle interaction responses (button clicks and transaction confirmations)
 bot.onInteractionResponse(async (handler, event) => {
     const contentCase = event.response.payload.content?.case
-    console.log('[onInteractionResponse] Received:', contentCase)
+    console.log('[onInteractionResponse] ========================')
+    console.log('[onInteractionResponse] Received event type:', contentCase)
+    console.log('[onInteractionResponse] Event structure:', JSON.stringify(event, null, 2))
+    console.log('[onInteractionResponse] ========================')
 
     if (contentCase === 'form') {
         // Handle button clicks (confirm/cancel)
@@ -872,6 +880,8 @@ bot.onInteractionResponse(async (handler, event) => {
     } else if (contentCase === 'transaction') {
         // Handle transaction confirmations
         await handleTransactionResponse(handler, event, getEthPrice)
+    } else {
+        console.log('[onInteractionResponse] ⚠️ Unknown content case:', contentCase)
     }
 })
 
