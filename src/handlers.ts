@@ -206,8 +206,9 @@ export async function handleTransactionResponse(
     console.log('[Transaction Response] Received transaction result for:', txId)
     console.log('[Transaction Response] Transaction hash:', txHash)
     console.log('[Transaction Response] SpaceId:', spaceId)
-    console.log('[Transaction Response] Full event:', JSON.stringify(event, null, 2))
-    console.log('[Transaction Response] Full transaction object:', JSON.stringify(transaction, null, 2))
+    console.log('[Transaction Response] EventId:', event.eventId)
+    console.log('[Transaction Response] UserId:', event.userId)
+    console.log('[Transaction Response] ChannelId:', event.channelId)
     console.log('[Transaction Response] Available transaction keys:', Object.keys(transaction))
     console.log('[Transaction Response] ========================')
 

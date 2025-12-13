@@ -322,7 +322,6 @@ bot.onSlashCommand('tip', async (handler, event) => {
 
         // Save pending transaction with messageId and channelId
         // Use eventId from sentMessage (actual event ID in stream) instead of id
-        console.log('[/tip] sentMessage object:', JSON.stringify(sentMessage, null, 2))
         console.log('[/tip] sentMessage?.eventId:', sentMessage?.eventId)
         console.log('[/tip] sentMessage?.id:', sentMessage?.id)
         const messageId = sentMessage?.eventId || sentMessage?.id || eventId
@@ -564,7 +563,6 @@ bot.onSlashCommand('donate', async (handler, event) => {
         // Store pending donation in database
         const requestId = `donate-${eventId}`
         // Use eventId from sentMessage (actual event ID in stream) instead of id
-        console.log('[/donate] sentMessage object:', JSON.stringify(sentMessage, null, 2))
         console.log('[/donate] sentMessage?.eventId:', sentMessage?.eventId)
         console.log('[/donate] sentMessage?.id:', sentMessage?.id)
         const messageId = sentMessage?.eventId || sentMessage?.id || eventId
@@ -880,7 +878,9 @@ bot.onInteractionResponse(async (handler, event) => {
     const contentCase = event.response.payload.content?.case
     console.log('[onInteractionResponse] ========================')
     console.log('[onInteractionResponse] Received event type:', contentCase)
-    console.log('[onInteractionResponse] Event structure:', JSON.stringify(event, null, 2))
+    console.log('[onInteractionResponse] EventId:', event.eventId)
+    console.log('[onInteractionResponse] UserId:', event.userId)
+    console.log('[onInteractionResponse] ChannelId:', event.channelId)
     console.log('[onInteractionResponse] ========================')
 
     if (contentCase === 'form') {
