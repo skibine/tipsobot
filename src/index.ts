@@ -534,6 +534,7 @@ bot.onSlashCommand('donate', async (handler, event) => {
         }
 
         // Send confirmation dialog
+        console.log('[/donate] Attempting to send confirmation dialog...')
         const sentMessage = await handler.sendInteractionRequest(channelId, {
             case: 'form',
             value: {
@@ -558,17 +559,25 @@ bot.onSlashCommand('donate', async (handler, event) => {
                 ]
             }
         }, hexToBytes(userId as `0x${string}`))
+        console.log('[/donate] Confirmation dialog sent successfully')
 
         // Store pending donation in database
         const requestId = `donate-${eventId}`
         // Use eventId from sentMessage (actual event ID in stream) instead of id
+        console.log('[/donate] sentMessage object:', JSON.stringify(sentMessage, null, 2))
+        console.log('[/donate] sentMessage?.eventId:', sentMessage?.eventId)
+        console.log('[/donate] sentMessage?.id:', sentMessage?.id)
         const messageId = sentMessage?.eventId || sentMessage?.id || eventId
+        console.log('[/donate] Final messageId to save:', messageId)
+
         await savePendingTransaction(spaceId, requestId, 'donate', userId, {
             usdAmount,
             ethAmount,
             botAddress: bot.appAddress,
             channelId
         }, messageId, channelId)
+
+        console.log('[/donate] Saved to DB with messageId:', messageId)
 
     } catch (error) {
         console.error('Error in /donate:', error)
