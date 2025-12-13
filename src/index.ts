@@ -321,7 +321,8 @@ bot.onSlashCommand('tip', async (handler, event) => {
         }, hexToBytes(userId as `0x${string}`))
 
         // Save pending transaction with messageId and channelId
-        const messageId = sentMessage?.id || eventId
+        // Use eventId from sentMessage (actual event ID in stream) instead of id
+        const messageId = sentMessage?.eventId || sentMessage?.id || eventId
         await savePendingTransaction(spaceId, requestId, 'tip', userId, {
             recipientId: recipient.userId,
             recipientName: recipient.displayName,
@@ -456,7 +457,8 @@ bot.onSlashCommand('tipsplit', async (handler, event) => {
 
         // Store pending tip in database
         const requestId = `tipsplit-${eventId}`
-        const messageId = sentMessage?.id || eventId
+        // Use eventId from sentMessage (actual event ID in stream) instead of id
+        const messageId = sentMessage?.eventId || sentMessage?.id || eventId
         await savePendingTransaction(spaceId, requestId, 'tipsplit', userId, {
             recipients: recipients.map(r => ({
                 userId: r.userId,
@@ -554,7 +556,8 @@ bot.onSlashCommand('donate', async (handler, event) => {
 
         // Store pending donation in database
         const requestId = `donate-${eventId}`
-        const messageId = sentMessage?.id || eventId
+        // Use eventId from sentMessage (actual event ID in stream) instead of id
+        const messageId = sentMessage?.eventId || sentMessage?.id || eventId
         await savePendingTransaction(spaceId, requestId, 'donate', userId, {
             usdAmount,
             ethAmount,
@@ -837,7 +840,8 @@ bot.onSlashCommand('contribute', async (handler, event) => {
 
         // Store pending contribution in database (will be processed after transaction confirmation)
         const contributionId = `contrib-${eventId}`
-        const messageId = sentMessage?.id || eventId
+        // Use eventId from sentMessage (actual event ID in stream) instead of id
+        const messageId = sentMessage?.eventId || sentMessage?.id || eventId
         await savePendingTransaction(spaceId, contributionId, 'contribute', userId, {
             requestId,
             creatorId: paymentRequest.creator_id,

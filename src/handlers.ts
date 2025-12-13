@@ -197,11 +197,14 @@ export async function handleTransactionResponse(
 ) {
     const transaction = event.response.payload.content.value
     const txId = transaction.requestId
+    const txHash = transaction.hash || transaction.txHash || transaction.transactionHash
     const spaceId = event.spaceId
 
     console.log('[Transaction Response] ========================')
     console.log('[Transaction Response] Received transaction result for:', txId)
+    console.log('[Transaction Response] Transaction hash:', txHash)
     console.log('[Transaction Response] SpaceId:', spaceId)
+    console.log('[Transaction Response] Full transaction object:', JSON.stringify(transaction, null, 2))
     console.log('[Transaction Response] ========================')
 
     try {
@@ -292,10 +295,11 @@ export async function handleTransactionResponse(
                 tipsReceived: 1
             })
 
-            // Send success message
+            // Send success message with transaction hash
+            const txHashInfo = txHash ? `\n\n🔗 [View on BaseScan](https://basescan.org/tx/${txHash})` : ''
             await handler.sendMessage(
                 data.channelId,
-                `✅ <@${data.contributorId}> contributed ~$${data.contributionUsd.toFixed(2)} to <@${data.creatorId}>!`,
+                `✅ <@${data.contributorId}> contributed ~$${data.contributionUsd.toFixed(2)} to <@${data.creatorId}>!${txHashInfo}`,
                 { mentions: [
                     { userId: data.contributorId, displayName: data.contributorId },
                     { userId: data.creatorId, displayName: data.creatorName }
@@ -358,10 +362,11 @@ export async function handleTransactionResponse(
                 tipsReceived: 1
             })
 
-            // Send success message
+            // Send success message with transaction hash
+            const txHashInfo = txHash ? `\n\n🔗 [View on BaseScan](https://basescan.org/tx/${txHash})` : ''
             await handler.sendMessage(
                 data.channelId,
-                `💸 <@${pendingTx.userId}> sent ~$${data.usdAmount.toFixed(2)} (${data.ethAmount.toFixed(6)} ETH) to <@${data.recipientId}>!`,
+                `💸 <@${pendingTx.userId}> sent ~$${data.usdAmount.toFixed(2)} (${data.ethAmount.toFixed(6)} ETH) to <@${data.recipientId}>!${txHashInfo}`,
                 { mentions: [
                     { userId: pendingTx.userId, displayName: pendingTx.userId },
                     { userId: data.recipientId, displayName: data.recipientName }
@@ -420,16 +425,17 @@ export async function handleTransactionResponse(
                     })
                 }
 
-                // Send success message
+                // Send success message with transaction hash
                 const recipientList = data.recipients.map((r: any) => `<@${r.userId}>`).join(', ')
                 const mentions = [
                     { userId: pendingTx.userId, displayName: pendingTx.userId },
                     ...data.recipients.map((r: any) => ({ userId: r.userId, displayName: r.displayName }))
                 ]
+                const txHashInfo = txHash ? `\n\n🔗 [View on BaseScan](https://basescan.org/tx/${txHash})` : ''
 
                 await handler.sendMessage(
                     data.channelId,
-                    `💸 <@${pendingTx.userId}> sent ~$${data.totalUsd.toFixed(2)} (${data.totalEth.toFixed(6)} ETH) split between ${recipientList}!`,
+                    `💸 <@${pendingTx.userId}> sent ~$${data.totalUsd.toFixed(2)} (${data.totalEth.toFixed(6)} ETH) split between ${recipientList}!${txHashInfo}`,
                     { mentions }
                 )
 
@@ -457,10 +463,11 @@ export async function handleTransactionResponse(
                 donations: 1
             })
 
-            // Send success message
+            // Send success message with transaction hash
+            const txHashInfo = txHash ? `\n\n🔗 [View on BaseScan](https://basescan.org/tx/${txHash})` : ''
             await handler.sendMessage(
                 data.channelId,
-                `❤️ Thank you <@${pendingTx.userId}> for your ~$${data.usdAmount.toFixed(2)} (${data.ethAmount.toFixed(6)} ETH) donation! Your support means everything! 🙏`,
+                `❤️ Thank you <@${pendingTx.userId}> for your ~$${data.usdAmount.toFixed(2)} (${data.ethAmount.toFixed(6)} ETH) donation! Your support means everything! 🙏${txHashInfo}`,
                 { mentions: [{ userId: pendingTx.userId, displayName: pendingTx.userId }] }
             )
 
