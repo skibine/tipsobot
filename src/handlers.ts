@@ -6,6 +6,7 @@ import {
     deletePendingTransaction,
     updatePendingTransaction,
     updatePendingTransactionStatus,
+    updateTransactionMessageId,
     updateGlobalStats,
     upsertUserStats,
     addContribution,
@@ -43,20 +44,6 @@ export async function handleFormResponse(
         messageId: pendingTx.messageId
     })
 
-    // 🔑 KEY FIX: Delete the form IMMEDIATELY after any button click
-    // This prevents users from re-clicking cached buttons after page refresh
-    if (pendingTx.messageId) {
-        try {
-            await handler.removeEvent(event.channelId, pendingTx.messageId)
-            console.log('[Form Response] ✅ Form deleted successfully, messageId:', pendingTx.messageId)
-        } catch (error) {
-            console.error('[Form Response] ❌ Failed to delete form:', error)
-            // Continue processing even if deletion fails
-        }
-    } else {
-        console.log('[Form Response] ⚠️ No messageId found, cannot delete form')
-    }
-
     // Find which button was clicked
     const clickedButton = form.components.find((c: any) => c.component.case === 'button')
     console.log('[Form Response] Button clicked:', clickedButton?.id)
@@ -71,6 +58,16 @@ export async function handleFormResponse(
         await deletePendingTransaction(form.requestId)
         await handler.sendMessage(event.channelId, '❌ Cancelled.')
         console.log('[Form Response] Transaction cancelled by user')
+
+        // Delete the form after cancellation
+        if (pendingTx.messageId) {
+            try {
+                await handler.removeEvent(event.channelId, pendingTx.messageId)
+                console.log('[Form Response] ✅ Form deleted after cancellation, messageId:', pendingTx.messageId)
+            } catch (error) {
+                console.error('[Form Response] ❌ Failed to delete form after cancellation:', error)
+            }
+        }
         return
     }
 
@@ -86,7 +83,7 @@ export async function handleFormResponse(
                 const amountWei = parseEther(data.ethAmount.toString())
                 const usdValue = data.contributionUsd.toFixed(2)
 
-                await handler.sendInteractionRequest(event.channelId, {
+                const txMessage = await handler.sendInteractionRequest(event.channelId, {
                     case: 'transaction',
                     value: {
                         id: `tx-${form.requestId}`,
@@ -105,12 +102,18 @@ export async function handleFormResponse(
                     }
                 }, hexToBytes(event.userId as `0x${string}`))
 
+                // Save transaction message ID for later deletion
+                if (txMessage?.eventId) {
+                    await updateTransactionMessageId(form.requestId, txMessage.eventId)
+                    console.log('[Form Response] Saved transaction message ID:', txMessage.eventId)
+                }
+
             } else if (form.requestId.startsWith('tip-')) {
                 // Regular tip
                 const amountWei = parseEther(data.ethAmount.toString())
                 const usdValue = data.usdAmount.toFixed(2)
 
-                await handler.sendInteractionRequest(event.channelId, {
+                const txMessage = await handler.sendInteractionRequest(event.channelId, {
                     case: 'transaction',
                     value: {
                         id: `tx-${form.requestId}`,
@@ -129,13 +132,20 @@ export async function handleFormResponse(
                     }
                 }, hexToBytes(event.userId as `0x${string}`))
 
+                // Save transaction message ID for later deletion
+                if (txMessage?.eventId) {
+                    await updateTransactionMessageId(form.requestId, txMessage.eventId)
+                    console.log('[Form Response] Saved transaction message ID:', txMessage.eventId)
+                }
+
             } else if (form.requestId.startsWith('tipsplit-')) {
                 // Tip split - send multiple transactions
+                let firstTxMessage: any = null
                 for (const recipient of data.recipients) {
                     const amountWei = parseEther(recipient.ethAmount.toString())
                     const usdValue = recipient.usdAmount.toFixed(2)
 
-                    await handler.sendInteractionRequest(event.channelId, {
+                    const txMessage = await handler.sendInteractionRequest(event.channelId, {
                         case: 'transaction',
                         value: {
                             id: `tx-${form.requestId}-${recipient.userId}`,
@@ -153,6 +163,17 @@ export async function handleFormResponse(
                             }
                         }
                     }, hexToBytes(event.userId as `0x${string}`))
+
+                    // Save first transaction message ID
+                    if (!firstTxMessage && txMessage?.eventId) {
+                        firstTxMessage = txMessage
+                    }
+                }
+
+                // Save first transaction message ID for later deletion
+                if (firstTxMessage?.eventId) {
+                    await updateTransactionMessageId(form.requestId, firstTxMessage.eventId)
+                    console.log('[Form Response] Saved first transaction message ID for tipsplit:', firstTxMessage.eventId)
                 }
 
             } else if (form.requestId.startsWith('donate-')) {
@@ -160,7 +181,7 @@ export async function handleFormResponse(
                 const amountWei = parseEther(data.ethAmount.toString())
                 const usdValue = data.usdAmount.toFixed(2)
 
-                await handler.sendInteractionRequest(event.channelId, {
+                const txMessage = await handler.sendInteractionRequest(event.channelId, {
                     case: 'transaction',
                     value: {
                         id: `tx-${form.requestId}`,
@@ -178,9 +199,29 @@ export async function handleFormResponse(
                         }
                     }
                 }, hexToBytes(event.userId as `0x${string}`))
+
+                // Save transaction message ID for later deletion
+                if (txMessage?.eventId) {
+                    await updateTransactionMessageId(form.requestId, txMessage.eventId)
+                    console.log('[Form Response] Saved transaction message ID:', txMessage.eventId)
+                }
             }
 
             console.log('[Form Response] Transaction request sent successfully')
+
+            // 🔑 Delete the form AFTER transaction request is sent
+            // This prevents blocking if removeEvent times out
+            if (pendingTx.messageId) {
+                try {
+                    await handler.removeEvent(event.channelId, pendingTx.messageId)
+                    console.log('[Form Response] ✅ Form deleted successfully, messageId:', pendingTx.messageId)
+                } catch (error) {
+                    console.error('[Form Response] ❌ Failed to delete form:', error)
+                    // Continue - form deletion failure is not critical
+                }
+            } else {
+                console.log('[Form Response] ⚠️ No messageId found, cannot delete form')
+            }
 
         } catch (error) {
             console.error('[Form Response] Error processing confirmation:', error)
@@ -197,11 +238,19 @@ export async function handleTransactionResponse(
 ) {
     const transaction = event.response.payload.content.value
     const txId = transaction.requestId
+
+    // Try multiple fields for transaction hash
+    const txHash = transaction.hash || transaction.txHash || transaction.transactionHash || transaction.receipt?.hash || transaction.receipt?.transactionHash
     const spaceId = event.spaceId
 
     console.log('[Transaction Response] ========================')
     console.log('[Transaction Response] Received transaction result for:', txId)
+    console.log('[Transaction Response] Transaction hash:', txHash)
     console.log('[Transaction Response] SpaceId:', spaceId)
+    console.log('[Transaction Response] EventId:', event.eventId)
+    console.log('[Transaction Response] UserId:', event.userId)
+    console.log('[Transaction Response] ChannelId:', event.channelId)
+    console.log('[Transaction Response] Available transaction keys:', Object.keys(transaction))
     console.log('[Transaction Response] ========================')
 
     try {
@@ -292,10 +341,11 @@ export async function handleTransactionResponse(
                 tipsReceived: 1
             })
 
-            // Send success message
+            // Send success message with transaction hash
+            const txHashInfo = txHash ? `\n\n🔗 [View on BaseScan](https://basescan.org/tx/${txHash})` : ''
             await handler.sendMessage(
                 data.channelId,
-                `✅ <@${data.contributorId}> contributed ~$${data.contributionUsd.toFixed(2)} to <@${data.creatorId}>!`,
+                `✅ <@${data.contributorId}> contributed ~$${data.contributionUsd.toFixed(2)} to <@${data.creatorId}>!${txHashInfo}`,
                 { mentions: [
                     { userId: data.contributorId, displayName: data.contributorId },
                     { userId: data.creatorId, displayName: data.creatorName }
@@ -334,7 +384,20 @@ export async function handleTransactionResponse(
             // 🔑 KEY FIX: Mark as processed but DON'T delete (keep for 7 days for duplicate detection)
             console.log('[Transaction Response] Marking as processed (keeping in DB for 7 days)')
             await updatePendingTransactionStatus(originalRequestId, 'processed')
-            
+
+            // Delete transaction confirmation form
+            console.log('[Transaction Response] pendingTx.transactionMessageId:', pendingTx.transactionMessageId)
+            if (pendingTx.transactionMessageId) {
+                try {
+                    await handler.removeEvent(data.channelId, pendingTx.transactionMessageId)
+                    console.log('[Transaction Response] ✅ Transaction form deleted successfully')
+                } catch (error) {
+                    console.error('[Transaction Response] ❌ Failed to delete transaction form:', error)
+                }
+            } else {
+                console.log('[Transaction Response] ⚠️ No transaction_message_id found, cannot delete transaction form')
+            }
+
             console.log('[Transaction Response] ✅ Contribution successfully processed!')
 
         } else if (originalRequestId.startsWith('tip-')) {
@@ -358,10 +421,11 @@ export async function handleTransactionResponse(
                 tipsReceived: 1
             })
 
-            // Send success message
+            // Send success message with transaction hash
+            const txHashInfo = txHash ? `\n\n🔗 [View on BaseScan](https://basescan.org/tx/${txHash})` : ''
             await handler.sendMessage(
                 data.channelId,
-                `💸 <@${pendingTx.userId}> sent ~$${data.usdAmount.toFixed(2)} (${data.ethAmount.toFixed(6)} ETH) to <@${data.recipientId}>!`,
+                `💸 <@${pendingTx.userId}> sent ~$${data.usdAmount.toFixed(2)} (${data.ethAmount.toFixed(6)} ETH) to <@${data.recipientId}>!${txHashInfo}`,
                 { mentions: [
                     { userId: pendingTx.userId, displayName: pendingTx.userId },
                     { userId: data.recipientId, displayName: data.recipientName }
@@ -371,7 +435,20 @@ export async function handleTransactionResponse(
             // 🔑 KEY FIX: Mark as processed but DON'T delete
             console.log('[Transaction Response] Marking as processed (keeping in DB for 7 days)')
             await updatePendingTransactionStatus(originalRequestId, 'processed')
-            
+
+            // Delete transaction confirmation form
+            console.log('[Transaction Response] pendingTx.transactionMessageId:', pendingTx.transactionMessageId)
+            if (pendingTx.transactionMessageId) {
+                try {
+                    await handler.removeEvent(data.channelId, pendingTx.transactionMessageId)
+                    console.log('[Transaction Response] ✅ Transaction form deleted successfully')
+                } catch (error) {
+                    console.error('[Transaction Response] ❌ Failed to delete transaction form:', error)
+                }
+            } else {
+                console.log('[Transaction Response] ⚠️ No transaction_message_id found, cannot delete transaction form')
+            }
+
             console.log('[Transaction Response] ✅ Tip successfully processed!')
 
         } else if (originalRequestId.startsWith('tipsplit-')) {
@@ -420,23 +497,37 @@ export async function handleTransactionResponse(
                     })
                 }
 
-                // Send success message
+                // Send success message with transaction hash
                 const recipientList = data.recipients.map((r: any) => `<@${r.userId}>`).join(', ')
                 const mentions = [
                     { userId: pendingTx.userId, displayName: pendingTx.userId },
                     ...data.recipients.map((r: any) => ({ userId: r.userId, displayName: r.displayName }))
                 ]
+                const txHashInfo = txHash ? `\n\n🔗 [View on BaseScan](https://basescan.org/tx/${txHash})` : ''
 
                 await handler.sendMessage(
                     data.channelId,
-                    `💸 <@${pendingTx.userId}> sent ~$${data.totalUsd.toFixed(2)} (${data.totalEth.toFixed(6)} ETH) split between ${recipientList}!`,
+                    `💸 <@${pendingTx.userId}> sent ~$${data.totalUsd.toFixed(2)} (${data.totalEth.toFixed(6)} ETH) split between ${recipientList}!${txHashInfo}`,
                     { mentions }
                 )
 
                 // 🔑 KEY FIX: Mark as processed but DON'T delete
                 console.log('[Transaction Response] Marking tipsplit as processed (keeping in DB for 7 days)')
                 await updatePendingTransactionStatus(originalRequestId, 'processed')
-                
+
+                // Delete transaction confirmation form
+                console.log('[Transaction Response] pendingTx.transactionMessageId:', pendingTx.transactionMessageId)
+                if (pendingTx.transactionMessageId) {
+                    try {
+                        await handler.removeEvent(data.channelId, pendingTx.transactionMessageId)
+                        console.log('[Transaction Response] ✅ Transaction form deleted successfully')
+                    } catch (error) {
+                        console.error('[Transaction Response] ❌ Failed to delete transaction form:', error)
+                    }
+                } else {
+                    console.log('[Transaction Response] ⚠️ No transaction_message_id found, cannot delete transaction form')
+                }
+
                 console.log('[Transaction Response] ✅ Tipsplit successfully processed!')
             }
 
@@ -457,17 +548,31 @@ export async function handleTransactionResponse(
                 donations: 1
             })
 
-            // Send success message
+            // Send success message with transaction hash
+            const txHashInfo = txHash ? `\n\n🔗 [View on BaseScan](https://basescan.org/tx/${txHash})` : ''
             await handler.sendMessage(
                 data.channelId,
-                `❤️ Thank you <@${pendingTx.userId}> for your ~$${data.usdAmount.toFixed(2)} (${data.ethAmount.toFixed(6)} ETH) donation! Your support means everything! 🙏`,
+                `❤️ Thank you <@${pendingTx.userId}> for your ~$${data.usdAmount.toFixed(2)} (${data.ethAmount.toFixed(6)} ETH) donation! Your support means everything! 🙏${txHashInfo}`,
                 { mentions: [{ userId: pendingTx.userId, displayName: pendingTx.userId }] }
             )
 
             // 🔑 KEY FIX: Mark as processed but DON'T delete (keep for 7 days)
             console.log('[Transaction Response] Marking donation as processed (keeping in DB for 7 days)')
             await updatePendingTransactionStatus(originalRequestId, 'processed')
-            
+
+            // Delete transaction confirmation form
+            console.log('[Transaction Response] pendingTx.transactionMessageId:', pendingTx.transactionMessageId)
+            if (pendingTx.transactionMessageId) {
+                try {
+                    await handler.removeEvent(data.channelId, pendingTx.transactionMessageId)
+                    console.log('[Transaction Response] ✅ Transaction form deleted successfully')
+                } catch (error) {
+                    console.error('[Transaction Response] ❌ Failed to delete transaction form:', error)
+                }
+            } else {
+                console.log('[Transaction Response] ⚠️ No transaction_message_id found, cannot delete transaction form')
+            }
+
             console.log('[Transaction Response] ✅ Donation successfully processed!')
 
         } else {

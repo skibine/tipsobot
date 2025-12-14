@@ -321,7 +321,12 @@ bot.onSlashCommand('tip', async (handler, event) => {
         }, hexToBytes(userId as `0x${string}`))
 
         // Save pending transaction with messageId and channelId
-        const messageId = sentMessage?.id || eventId
+        // Use eventId from sentMessage (actual event ID in stream) instead of id
+        console.log('[/tip] sentMessage?.eventId:', sentMessage?.eventId)
+        console.log('[/tip] sentMessage?.id:', sentMessage?.id)
+        const messageId = sentMessage?.eventId || sentMessage?.id || eventId
+        console.log('[/tip] Final messageId to save:', messageId)
+
         await savePendingTransaction(spaceId, requestId, 'tip', userId, {
             recipientId: recipient.userId,
             recipientName: recipient.displayName,
@@ -331,7 +336,7 @@ bot.onSlashCommand('tip', async (handler, event) => {
             channelId
         }, messageId, channelId)
 
-        console.log('[/tip] Confirmation dialog sent')
+        console.log('[/tip] Confirmation dialog sent, saved to DB with messageId:', messageId)
 
     } catch (error) {
         console.error('[/tip] Error:', error)
@@ -456,7 +461,8 @@ bot.onSlashCommand('tipsplit', async (handler, event) => {
 
         // Store pending tip in database
         const requestId = `tipsplit-${eventId}`
-        const messageId = sentMessage?.id || eventId
+        // Use eventId from sentMessage (actual event ID in stream) instead of id
+        const messageId = sentMessage?.eventId || sentMessage?.id || eventId
         await savePendingTransaction(spaceId, requestId, 'tipsplit', userId, {
             recipients: recipients.map(r => ({
                 userId: r.userId,
@@ -527,6 +533,7 @@ bot.onSlashCommand('donate', async (handler, event) => {
         }
 
         // Send confirmation dialog
+        console.log('[/donate] Attempting to send confirmation dialog...')
         const sentMessage = await handler.sendInteractionRequest(channelId, {
             case: 'form',
             value: {
@@ -551,16 +558,24 @@ bot.onSlashCommand('donate', async (handler, event) => {
                 ]
             }
         }, hexToBytes(userId as `0x${string}`))
+        console.log('[/donate] Confirmation dialog sent successfully')
 
         // Store pending donation in database
         const requestId = `donate-${eventId}`
-        const messageId = sentMessage?.id || eventId
+        // Use eventId from sentMessage (actual event ID in stream) instead of id
+        console.log('[/donate] sentMessage?.eventId:', sentMessage?.eventId)
+        console.log('[/donate] sentMessage?.id:', sentMessage?.id)
+        const messageId = sentMessage?.eventId || sentMessage?.id || eventId
+        console.log('[/donate] Final messageId to save:', messageId)
+
         await savePendingTransaction(spaceId, requestId, 'donate', userId, {
             usdAmount,
             ethAmount,
             botAddress: bot.appAddress,
             channelId
         }, messageId, channelId)
+
+        console.log('[/donate] Saved to DB with messageId:', messageId)
 
     } catch (error) {
         console.error('Error in /donate:', error)
@@ -837,7 +852,8 @@ bot.onSlashCommand('contribute', async (handler, event) => {
 
         // Store pending contribution in database (will be processed after transaction confirmation)
         const contributionId = `contrib-${eventId}`
-        const messageId = sentMessage?.id || eventId
+        // Use eventId from sentMessage (actual event ID in stream) instead of id
+        const messageId = sentMessage?.eventId || sentMessage?.id || eventId
         await savePendingTransaction(spaceId, contributionId, 'contribute', userId, {
             requestId,
             creatorId: paymentRequest.creator_id,
@@ -860,7 +876,12 @@ bot.onSlashCommand('contribute', async (handler, event) => {
 // Handle interaction responses (button clicks and transaction confirmations)
 bot.onInteractionResponse(async (handler, event) => {
     const contentCase = event.response.payload.content?.case
-    console.log('[onInteractionResponse] Received:', contentCase)
+    console.log('[onInteractionResponse] ========================')
+    console.log('[onInteractionResponse] Received event type:', contentCase)
+    console.log('[onInteractionResponse] EventId:', event.eventId)
+    console.log('[onInteractionResponse] UserId:', event.userId)
+    console.log('[onInteractionResponse] ChannelId:', event.channelId)
+    console.log('[onInteractionResponse] ========================')
 
     if (contentCase === 'form') {
         // Handle button clicks (confirm/cancel)
@@ -868,6 +889,8 @@ bot.onInteractionResponse(async (handler, event) => {
     } else if (contentCase === 'transaction') {
         // Handle transaction confirmations
         await handleTransactionResponse(handler, event, getEthPrice)
+    } else {
+        console.log('[onInteractionResponse] ⚠️ Unknown content case:', contentCase)
     }
 })
 

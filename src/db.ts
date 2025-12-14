@@ -17,6 +17,15 @@ export async function initDatabase() {
         console.log('[DB] Initializing database schema...')
         const schema = readFileSync(join(__dirname, 'schema.sql'), 'utf-8')
         await pool.query(schema)
+
+        // Run migrations
+        console.log('[DB] Running migrations...')
+        await pool.query(`
+            ALTER TABLE pending_transactions
+            ADD COLUMN IF NOT EXISTS transaction_message_id VARCHAR(100);
+        `)
+        console.log('[DB] Migrations completed')
+
         console.log('[DB] Database schema initialized successfully')
     } catch (error) {
         console.error('[DB] Failed to initialize database:', error)
@@ -322,6 +331,7 @@ export async function getPendingTransaction(id: string) {
         userId: row.user_id,
         data: typeof row.data === 'string' ? JSON.parse(row.data) : row.data,
         messageId: row.message_id,
+        transactionMessageId: row.transaction_message_id,
         channelId: row.channel_id,
         status: row.status,
         createdAt: row.created_at
@@ -339,6 +349,13 @@ export async function updatePendingTransactionStatus(id: string, status: 'pendin
     await pool.query(
         'UPDATE pending_transactions SET status = $1 WHERE id = $2',
         [status, id]
+    )
+}
+
+export async function updateTransactionMessageId(id: string, transactionMessageId: string) {
+    await pool.query(
+        'UPDATE pending_transactions SET transaction_message_id = $1 WHERE id = $2',
+        [transactionMessageId, id]
     )
 }
 
