@@ -187,6 +187,438 @@ bot.onSlashCommand('time', async (handler, { channelId }) => {
     debugLog('/time', 'END')
 })
 
+// Simple message responses
+bot.onMessage(async (handler, event) => {
+    const { message, channelId, eventId, createdAt, isMentioned } = event
+    const lowerMsg = message.toLowerCase()
+
+    debugLog('onMessage', 'Received message', {
+        isMentioned,
+        hasKeywords: lowerMsg.includes('hello') || lowerMsg.includes('ping')
+    })
+    trackRpcCall()
+
+    if (isMentioned) {
+        await handler.sendMessage(
+            channelId,
+            '👋 Hi! I help you send $ tips (auto-converted to ETH on Base).\n\nType `/help` to see all available commands!'
+        )
+        trackRpcSuccess()
+        return
+    }
+
+    if (lowerMsg.includes('hello') || lowerMsg.includes('hi')) {
+        await handler.sendMessage(channelId, 'Hello there! 👋 Type `/help` to see what I can do!')
+        trackRpcSuccess()
+        return
+    }
+
+    if (lowerMsg.includes('ping')) {
+        const latency = new Date().getTime() - createdAt.getTime()
+        await handler.sendMessage(channelId, `Pong! 🏓 Latency: ${latency}ms`)
+        trackRpcSuccess()
+        return
+    }
+
+    if (lowerMsg.includes('react')) {
+        await handler.sendReaction(channelId, eventId, '👍')
+        trackRpcSuccess()
+        return
+    }
+    
+    trackRpcSuccess()
+})
+
+bot.onReaction(async (handler, { reaction, channelId }) => {
+    debugLog('onReaction', 'Received reaction', { reaction })
+    trackRpcCall()
+    
+    if (reaction === '👋') {
+        await handler.sendMessage(channelId, 'I saw your wave! 👋')
+    }
+    
+    trackRpcSuccess()
+})
+
+// /tip @username amount
+bot.onSlashCommand('tip', async (handler, event) => {
+    const { args, mentions, channelId, userId, eventId, spaceId } = event
+
+    debugLog('/tip', 'START', { userId, mentions: mentions.length, args })
+    trackRpcCall()
+
+    if (mentions.length === 0) {
+        debugLog('/tip', 'No mentions found')
+        await handler.sendMessage(channelId, '❌ Please mention a user to tip.\n**Usage:** `/tip @username amount`')
+        trackRpcSuccess()
+        return
+    }
+
+    if (mentions.length > 1) {
+        debugLog('/tip', 'Too many mentions', { count: mentions.length })
+        await handler.sendMessage(channelId, '❌ Please mention only ONE user. Use `/tipsplit` for multiple users.')
+        trackRpcSuccess()
+        return
+    }
+
+    const recipient = mentions[0]
+
+    if (recipient.userId === userId) {
+        debugLog('/tip', 'Self-tip attempt')
+        await handler.sendMessage(channelId, '❌ You cannot tip yourself! 😅')
+        trackRpcSuccess()
+        return
+    }
+
+    const usdAmount = parseAmountFromArgs(args)
+    debugLog('/tip', 'Parsed amount', { usdAmount, args })
+
+    if (usdAmount === null) {
+        await handler.sendMessage(channelId, '❌ Please provide a valid amount.\n**Usage:** `/tip @username amount`')
+        trackRpcSuccess()
+        return
+    }
+
+    if (usdAmount <= 0) {
+        await handler.sendMessage(channelId, '❌ Amount must be greater than 0.')
+        trackRpcSuccess()
+        return
+    }
+
+    try {
+        debugLog('/tip', 'Getting recipient wallet', { recipientId: recipient.userId })
+        const recipientWallet = await getSmartAccountFromUserId(bot, { userId: recipient.userId })
+        debugLog('/tip', 'Recipient wallet found', { wallet: recipientWallet?.slice(0, 10) + '...' })
+
+        if (!recipientWallet) {
+            await handler.sendMessage(channelId, '❌ Unable to find wallet for the mentioned user.')
+            trackRpcSuccess()
+            return
+        }
+
+        debugLog('/tip', 'Getting sender wallet')
+        const senderWallet = await getSmartAccountFromUserId(bot, { userId: userId })
+        if (!senderWallet) {
+            await handler.sendMessage(channelId, '❌ Unable to find your wallet.')
+            trackRpcSuccess()
+            return
+        }
+
+        const ethAmount = await usdToEth(usdAmount)
+        const ethAmountWei = parseEther(ethAmount.toString())
+
+        debugLog('/tip', 'USD to ETH conversion', { usd: usdAmount, eth: ethAmount })
+
+        const { hasEnough, balance } = await checkBalance(senderWallet as `0x${string}`, ethAmountWei)
+
+        if (!hasEnough) {
+            const balanceUsd = (parseFloat(formatEther(balance)) * await getEthPrice()).toFixed(2)
+            debugLog('/tip', 'Insufficient balance', { required: usdAmount, balance: balanceUsd })
+            await handler.sendMessage(
+                channelId,
+                `❌ Insufficient balance!\n\n` +
+                `**Required:** $${usdAmount.toFixed(2)} (~${ethAmount.toFixed(6)} ETH)\n` +
+                `**Your balance:** $${balanceUsd} (~${formatEther(balance)} ETH)\n\n` +
+                `Please add more funds to your wallet.`
+            )
+            trackRpcSuccess()
+            return
+        }
+
+        const requestId = `tip-${eventId}`
+        debugLog('/tip', 'Sending confirmation dialog', { requestId })
+        
+        const sentMessage = await handler.sendInteractionRequest(channelId, {
+            case: 'form',
+            value: {
+                id: requestId,
+                title: `💸 Confirm Tip`,
+                description: `Send $${usdAmount.toFixed(2)} (~${ethAmount.toFixed(6)} ETH) to <@${recipient.userId}>?\n\nRecipient wallet: ${recipientWallet.slice(0, 6)}...${recipientWallet.slice(-4)}`,
+                components: [
+                    {
+                        id: 'confirm',
+                        component: {
+                            case: 'button',
+                            value: { label: '✅ Confirm' }
+                        }
+                    },
+                    {
+                        id: 'cancel',
+                        component: {
+                            case: 'button',
+                            value: { label: '❌ Cancel' }
+                        }
+                    }
+                ]
+            }
+        }, hexToBytes(userId as `0x${string}`))
+
+        const messageId = sentMessage?.eventId || sentMessage?.id || eventId
+        debugLog('/tip', 'Confirmation sent, saving to DB', { messageId })
+
+        await savePendingTransaction(spaceId, requestId, 'tip', userId, {
+            recipientId: recipient.userId,
+            recipientName: recipient.displayName,
+            recipientWallet,
+            usdAmount,
+            ethAmount,
+            channelId
+        }, messageId, channelId)
+
+        debugLog('/tip', 'END - Success')
+        trackRpcSuccess()
+
+    } catch (error) {
+        debugError('/tip', 'Error processing tip', error)
+        trackRpcError(error)
+        await handler.sendMessage(channelId, '❌ Failed to process tip request. Please try again.')
+    }
+})
+
+// /tipsplit @user1 @user2 @user3 amount
+bot.onSlashCommand('tipsplit', async (handler, event) => {
+    const { args, mentions, channelId, userId, eventId, spaceId } = event
+
+    debugLog('/tipsplit', 'START', { userId, mentions: mentions.length, args })
+    trackRpcCall()
+
+    if (mentions.length < 2) {
+        debugLog('/tipsplit', 'Not enough mentions', { count: mentions.length })
+        await handler.sendMessage(channelId, '❌ Please mention at least 2 users.\n**Usage:** `/tipsplit @user1 @user2 amount`')
+        trackRpcSuccess()
+        return
+    }
+
+    const selfTip = mentions.find(m => m.userId === userId)
+    if (selfTip) {
+        debugLog('/tipsplit', 'User included themselves')
+        await handler.sendMessage(channelId, '❌ You cannot include yourself in a tip split! 😅')
+        trackRpcSuccess()
+        return
+    }
+
+    const totalUsd = parseAmountFromArgs(args)
+    debugLog('/tipsplit', 'Parsed amount', { totalUsd, args })
+
+    if (totalUsd === null) {
+        await handler.sendMessage(channelId, '❌ Please provide a valid amount.\n**Usage:** `/tipsplit @user1 @user2 amount`')
+        trackRpcSuccess()
+        return
+    }
+
+    if (totalUsd <= 0) {
+        await handler.sendMessage(channelId, '❌ Amount must be greater than 0.')
+        trackRpcSuccess()
+        return
+    }
+
+    const splitUsd = parseFloat((totalUsd / mentions.length).toFixed(2))
+
+    try {
+        debugLog('/tipsplit', 'Getting sender wallet')
+        const senderWallet = await getSmartAccountFromUserId(bot, { userId: userId })
+        if (!senderWallet) {
+            await handler.sendMessage(channelId, '❌ Unable to find your wallet.')
+            trackRpcSuccess()
+            return
+        }
+
+        const totalEth = await usdToEth(totalUsd)
+        const totalEthWei = parseEther(totalEth.toString())
+
+        debugLog('/tipsplit', 'Converted', { totalUsd, totalEth })
+
+        const { hasEnough, balance } = await checkBalance(senderWallet as `0x${string}`, totalEthWei)
+
+        if (!hasEnough) {
+            const balanceUsd = (parseFloat(formatEther(balance)) * await getEthPrice()).toFixed(2)
+            await handler.sendMessage(
+                channelId,
+                `❌ Insufficient balance!\n\n` +
+                `**Required:** $${totalUsd.toFixed(2)} (~${totalEth.toFixed(6)} ETH)\n` +
+                `**Your balance:** $${balanceUsd} (~${formatEther(balance)} ETH)\n\n` +
+                `Please add more funds to your wallet.`
+            )
+            trackRpcSuccess()
+            return
+        }
+
+        const splitEth = await usdToEth(splitUsd)
+
+        debugLog('/tipsplit', 'Getting recipient wallets...')
+        const recipients = []
+        for (const mention of mentions) {
+            const wallet = await getSmartAccountFromUserId(bot, { userId: mention.userId })
+            if (!wallet) {
+                await handler.sendMessage(channelId, `❌ Unable to find wallet for <@${mention.userId}> (${mention.displayName})`)
+                trackRpcSuccess()
+                return
+            }
+            recipients.push({
+                userId: mention.userId,
+                displayName: mention.displayName,
+                wallet: wallet as `0x${string}`,
+                amount: splitEth
+            })
+        }
+        debugLog('/tipsplit', 'All wallets found', { count: recipients.length })
+
+        const breakdown = recipients
+            .map(r => `  • $${splitUsd.toFixed(2)} (~${r.amount.toFixed(6)} ETH) → <@${r.userId}>`)
+            .join('\n')
+
+        const sentMessage = await handler.sendInteractionRequest(channelId, {
+            case: 'form',
+            value: {
+                id: `tipsplit-${eventId}`,
+                title: `💸 Confirm Split Tip`,
+                description: `Split $${totalUsd.toFixed(2)} (~${totalEth.toFixed(6)} ETH) between ${mentions.length} users:\n\n${breakdown}`,
+                components: [
+                    {
+                        id: 'confirm',
+                        component: {
+                            case: 'button',
+                            value: { label: '✅ Confirm' }
+                        }
+                    },
+                    {
+                        id: 'cancel',
+                        component: {
+                            case: 'button',
+                            value: { label: '❌ Cancel' }
+                        }
+                    }
+                ]
+            }
+        }, hexToBytes(userId as `0x${string}`))
+
+        const requestId = `tipsplit-${eventId}`
+        const messageId = sentMessage?.eventId || sentMessage?.id || eventId
+        
+        debugLog('/tipsplit', 'Saving to DB', { requestId, messageId })
+        await savePendingTransaction(spaceId, requestId, 'tipsplit', userId, {
+            recipients: recipients.map(r => ({
+                userId: r.userId,
+                displayName: r.displayName,
+                wallet: r.wallet,
+                usdAmount: splitUsd,
+                ethAmount: r.amount
+            })),
+            totalUsd,
+            totalEth,
+            channelId,
+            completedRecipients: []
+        }, messageId, channelId)
+
+        debugLog('/tipsplit', 'END - Success')
+        trackRpcSuccess()
+
+    } catch (error) {
+        debugError('/tipsplit', 'Error', error)
+        trackRpcError(error)
+        await handler.sendMessage(channelId, '❌ Failed to process split tip request. Please try again.')
+    }
+})
+
+// /donate amount
+bot.onSlashCommand('donate', async (handler, event) => {
+    const { args, channelId, userId, eventId, spaceId } = event
+
+    debugLog('/donate', 'START', { userId, args })
+    trackRpcCall()
+
+    const usdAmount = parseAmountFromArgs(args)
+    debugLog('/donate', 'Parsed amount', { usdAmount, args })
+
+    if (usdAmount === null) {
+        await handler.sendMessage(channelId, '❌ Please provide a valid amount.\n**Usage:** `/donate amount`')
+        trackRpcSuccess()
+        return
+    }
+
+    if (usdAmount <= 0) {
+        await handler.sendMessage(channelId, '❌ Amount must be greater than 0.')
+        trackRpcSuccess()
+        return
+    }
+
+    try {
+        debugLog('/donate', 'Getting sender wallet')
+        const senderWallet = await getSmartAccountFromUserId(bot, { userId: userId })
+        if (!senderWallet) {
+            await handler.sendMessage(channelId, '❌ Unable to find your wallet.')
+            trackRpcSuccess()
+            return
+        }
+
+        const ethAmount = await usdToEth(usdAmount)
+        const ethAmountWei = parseEther(ethAmount.toString())
+
+        debugLog('/donate', 'Converted', { usdAmount, ethAmount })
+
+        const { hasEnough, balance } = await checkBalance(senderWallet as `0x${string}`, ethAmountWei)
+
+        if (!hasEnough) {
+            const balanceUsd = (parseFloat(formatEther(balance)) * await getEthPrice()).toFixed(2)
+            await handler.sendMessage(
+                channelId,
+                `❌ Insufficient balance!\n\n` +
+                `**Required:** $${usdAmount.toFixed(2)} (~${ethAmount.toFixed(6)} ETH)\n` +
+                `**Your balance:** $${balanceUsd} (~${formatEther(balance)} ETH)\n\n` +
+                `Please add more funds to your wallet.`
+            )
+            trackRpcSuccess()
+            return
+        }
+
+        debugLog('/donate', 'Sending confirmation dialog...')
+        const sentMessage = await handler.sendInteractionRequest(channelId, {
+            case: 'form',
+            value: {
+                id: `donate-${eventId}`,
+                title: `❤️ Confirm Donation`,
+                description: `Donate $${usdAmount.toFixed(2)} (~${ethAmount.toFixed(6)} ETH) to support TipsoBot?\n\nYour support helps keep this bot running! 🙏`,
+                components: [
+                    {
+                        id: 'confirm',
+                        component: {
+                            case: 'button',
+                            value: { label: '✅ Confirm Donation' }
+                        }
+                    },
+                    {
+                        id: 'cancel',
+                        component: {
+                            case: 'button',
+                            value: { label: '❌ Cancel' }
+                        }
+                    }
+                ]
+            }
+        }, hexToBytes(userId as `0x${string}`))
+        debugLog('/donate', 'Confirmation dialog sent')
+
+        const requestId = `donate-${eventId}`
+        const messageId = sentMessage?.eventId || sentMessage?.id || eventId
+        
+        debugLog('/donate', 'Saving to DB', { requestId, messageId })
+        await savePendingTransaction(spaceId, requestId, 'donate', userId, {
+            usdAmount,
+            ethAmount,
+            botAddress: bot.appAddress,
+            channelId
+        }, messageId, channelId)
+
+        debugLog('/donate', 'END - Success')
+        trackRpcSuccess()
+
+    } catch (error) {
+        debugError('/donate', 'Error', error)
+        trackRpcError(error)
+        await handler.sendMessage(channelId, '❌ Failed to process donation request. Please try again.')
+    }
+})
+
 // /stats - town statistics
 bot.onSlashCommand('stats', async (handler, event) => {
     const { channelId, spaceId } = event
@@ -291,6 +723,274 @@ bot.onSlashCommand('leaderboard', async (handler, event) => {
         trackRpcError(error)
         await handler.sendMessage(channelId, '❌ Failed to fetch leaderboard.')
     }
+})
+
+// /request amount description
+bot.onSlashCommand('request', async (handler, event) => {
+    const { args, userId, channelId, eventId, spaceId } = event
+
+    debugLog('/request', 'START', { userId, args })
+    trackRpcCall()
+
+    const canUse = await checkCooldown(spaceId, userId, 'request', REQUEST_COOLDOWN)
+    if (!canUse) {
+        const remaining = await getRemainingCooldown(spaceId, userId, 'request', REQUEST_COOLDOWN)
+        debugLog('/request', 'Cooldown active', { remaining })
+        await handler.sendMessage(
+            channelId,
+            `⏰ You can only create one payment request every 24 hours.\n\n` +
+            `**Time remaining:** ${formatTimeRemaining(remaining)}`
+        )
+        trackRpcSuccess()
+        return
+    }
+
+    const amountStr = args[0]
+    const description = args.slice(1).join(' ')
+
+    if (!amountStr) {
+        await handler.sendMessage(channelId, '❌ Please provide an amount.\n**Usage:** `/request amount description`')
+        trackRpcSuccess()
+        return
+    }
+
+    const amount = parseFloat(amountStr)
+    if (isNaN(amount) || amount <= 0) {
+        await handler.sendMessage(channelId, '❌ Please provide a valid positive amount.')
+        trackRpcSuccess()
+        return
+    }
+
+    if (!description || description.trim().length === 0) {
+        await handler.sendMessage(channelId, '❌ Please provide a description.\n**Usage:** `/request amount description`')
+        trackRpcSuccess()
+        return
+    }
+
+    try {
+        debugLog('/request', 'Getting creator wallet')
+        const creatorWallet = await getSmartAccountFromUserId(bot, { userId: userId })
+        if (!creatorWallet) {
+            await handler.sendMessage(channelId, '❌ Unable to find your wallet.')
+            trackRpcSuccess()
+            return
+        }
+
+        const requestId = `req-${eventId}`
+
+        debugLog('/request', 'Creating payment request in DB', { requestId, amount })
+        await createPaymentRequest({
+            id: requestId,
+            spaceId,
+            creatorId: userId,
+            creatorName: 'User',
+            amount,
+            description: description.trim(),
+            channelId
+        })
+
+        await updateCooldown(spaceId, userId, 'request')
+
+        debugLog('/request', 'Sending success message')
+        await handler.sendMessage(
+            channelId,
+            `**💰 Payment Request Created**\n\n` +
+                `**Goal:** $${amount.toFixed(2)}\n` +
+                `**Description:** ${description.trim()}\n` +
+                `**Collected:** $0.00 / $${amount.toFixed(2)}\n` +
+                `**Progress:** ▱▱▱▱▱▱▱▱▱▱ 0%\n\n` +
+                `To contribute, use: \`/contribute ${requestId} amount\`\n` +
+                `Example: \`/contribute ${requestId} 5\``
+        )
+
+        debugLog('/request', 'END - Success')
+        trackRpcSuccess()
+
+    } catch (error) {
+        debugError('/request', 'Error', error)
+        trackRpcError(error)
+        await handler.sendMessage(channelId, '❌ Failed to create payment request. Please try again.')
+    }
+})
+
+// /contribute requestId amount
+bot.onSlashCommand('contribute', async (handler, event) => {
+    const { args, userId, channelId, eventId, spaceId } = event
+
+    debugLog('/contribute', 'START', { userId, args })
+    trackRpcCall()
+
+    const requestId = args[0]
+    const amountStr = args[1]
+
+    if (!requestId) {
+        await handler.sendMessage(channelId, '❌ Please provide a request ID.\n**Usage:** `/contribute requestId amount`')
+        trackRpcSuccess()
+        return
+    }
+
+    if (!amountStr) {
+        await handler.sendMessage(channelId, '❌ Please provide an amount.\n**Usage:** `/contribute requestId amount`')
+        trackRpcSuccess()
+        return
+    }
+
+    const amount = parseFloat(amountStr)
+    if (isNaN(amount) || amount <= 0) {
+        await handler.sendMessage(channelId, '❌ Please provide a valid positive amount.')
+        trackRpcSuccess()
+        return
+    }
+
+    try {
+        debugLog('/contribute', 'Finding payment request in DB', { requestId })
+        const paymentRequest = await getPaymentRequest(requestId)
+        if (!paymentRequest) {
+            await handler.sendMessage(channelId, '❌ Payment request not found. Please check the request ID.')
+            trackRpcSuccess()
+            return
+        }
+
+        if (paymentRequest.is_completed) {
+            debugLog('/contribute', 'Request already completed')
+            await handler.sendMessage(
+                channelId,
+                `❌ This payment request is already completed! 🎉\n\n` +
+                `<@${paymentRequest.creator_id}> is happy! Goal was reached. 😊`,
+                { mentions: [{ userId: paymentRequest.creator_id, displayName: paymentRequest.creator_name }] }
+            )
+            trackRpcSuccess()
+            return
+        }
+
+        debugLog('/contribute', 'Getting contributor wallet')
+        const contributorWallet = await getSmartAccountFromUserId(bot, { userId: userId })
+        if (!contributorWallet) {
+            await handler.sendMessage(channelId, '❌ Unable to find your wallet.')
+            trackRpcSuccess()
+            return
+        }
+
+        debugLog('/contribute', 'Getting creator wallet')
+        const creatorWallet = await getSmartAccountFromUserId(bot, { userId: paymentRequest.creator_id })
+        if (!creatorWallet) {
+            await handler.sendMessage(channelId, '❌ Unable to find creator wallet.')
+            trackRpcSuccess()
+            return
+        }
+
+        const ethAmount = await usdToEth(amount)
+        const ethAmountWei = parseEther(ethAmount.toString())
+
+        debugLog('/contribute', 'Converted', { amount, ethAmount })
+
+        const { hasEnough, balance } = await checkBalance(contributorWallet as `0x${string}`, ethAmountWei)
+
+        if (!hasEnough) {
+            const balanceUsd = (parseFloat(formatEther(balance)) * await getEthPrice()).toFixed(2)
+            await handler.sendMessage(
+                channelId,
+                `❌ Insufficient balance!\n\n` +
+                `**Required:** $${amount.toFixed(2)} (~${ethAmount.toFixed(6)} ETH)\n` +
+                `**Your balance:** $${balanceUsd} (~${formatEther(balance)} ETH)\n\n` +
+                `Please add more funds to your wallet.`
+            )
+            trackRpcSuccess()
+            return
+        }
+
+        debugLog('/contribute', 'Sending confirmation dialog')
+        const sentMessage = await handler.sendInteractionRequest(channelId, {
+            case: 'form',
+            value: {
+                id: `contrib-${eventId}`,
+                title: `💰 Confirm Contribution`,
+                description: `Contribute $${amount.toFixed(2)} (~${ethAmount.toFixed(6)} ETH) to:\n\n"${paymentRequest.description}"\n\nCreated by: <@${paymentRequest.creator_id}>`,
+                components: [
+                    {
+                        id: 'confirm',
+                        component: {
+                            case: 'button',
+                            value: { label: '✅ Confirm' }
+                        }
+                    },
+                    {
+                        id: 'cancel',
+                        component: {
+                            case: 'button',
+                            value: { label: '❌ Cancel' }
+                        }
+                    }
+                ]
+            }
+        }, hexToBytes(userId as `0x${string}`))
+
+        const contributionId = `contrib-${eventId}`
+        const messageId = sentMessage?.eventId || sentMessage?.id || eventId
+        
+        debugLog('/contribute', 'Saving to DB', { contributionId, messageId })
+        await savePendingTransaction(spaceId, contributionId, 'contribute', userId, {
+            requestId,
+            creatorId: paymentRequest.creator_id,
+            creatorName: paymentRequest.creator_name,
+            creatorWallet,
+            contributorId: userId,
+            contributionUsd: amount,
+            ethAmount,
+            channelId
+        }, messageId, channelId)
+
+        debugLog('/contribute', 'END - Success')
+        trackRpcSuccess()
+
+    } catch (error) {
+        debugError('/contribute', 'Error', error)
+        trackRpcError(error)
+        await handler.sendMessage(channelId, '❌ Failed to process contribution. Please try again.')
+    }
+})
+
+// Handle interaction responses
+bot.onInteractionResponse(async (handler, event) => {
+    const contentCase = event.response.payload.content?.case
+    
+    debugLog('onInteractionResponse', 'Received interaction', {
+        contentCase,
+        eventId: event.eventId,
+        userId: event.userId
+    })
+    trackRpcCall()
+
+    if (contentCase === 'form') {
+        await handleFormResponse(handler, event, getEthPrice)
+    } else if (contentCase === 'transaction') {
+        await handleTransactionResponse(handler, event, getEthPrice)
+    } else {
+        debugLog('onInteractionResponse', 'Unknown content case', { contentCase })
+    }
+    
+    trackRpcSuccess()
+})
+
+// Handle direct tips to the bot
+bot.onTip(async (handler, event) => {
+    debugLog('onTip', 'Received tip', { receiverAddress: event.receiverAddress.slice(0, 10) + '...' })
+    trackRpcCall()
+    
+    const { receiverAddress, amount, channelId } = event
+
+    if (receiverAddress.toLowerCase() === bot.appAddress.toLowerCase()) {
+        const ethAmount = parseFloat(formatUnits(amount, ETH_DECIMALS))
+        const ethPrice = await getEthPrice()
+        const usdAmount = (ethAmount * ethPrice).toFixed(2)
+
+        await handler.sendMessage(
+            channelId,
+            `❤️ Thank you for the tip! Received ~$${usdAmount} (${ethAmount.toFixed(6)} ETH)! 🙏`
+        )
+    }
+    
+    trackRpcSuccess()
 })
 
 // Initialize database and start bot
