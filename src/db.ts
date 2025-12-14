@@ -8,7 +8,7 @@ export const pool = new Pool({
     ssl: process.env.DATABASE_SSL === 'true' ? { rejectUnauthorized: false } : false,
     max: 20, // Maximum number of clients in the pool
     idleTimeoutMillis: 30000,
-    connectionTimeoutMillis: 2000,
+    connectionTimeoutMillis: 5000,
 })
 
 // Initialize database schema
