@@ -65,7 +65,6 @@ async function getEthPrice(): Promise<number> {
 
     try {
         debugLog('getEthPrice', 'Fetching new price from CoinGecko...')
-        // Fetch from CoinGecko API (free, no auth required)
         const response = await fetch('https://api.coingecko.com/api/v3/simple/price?ids=ethereum&vs_currencies=usd')
 
         if (!response.ok) {
@@ -74,7 +73,6 @@ async function getEthPrice(): Promise<number> {
 
         const data = await response.json()
 
-        // Validate response structure
         if (!data || !data.ethereum || typeof data.ethereum.usd !== 'number') {
             debugError('getEthPrice', 'Invalid API response structure', data)
             throw new Error('Invalid API response structure')
@@ -83,21 +81,18 @@ async function getEthPrice(): Promise<number> {
         const price = data.ethereum.usd
         debugLog('getEthPrice', 'Fetched new price successfully', { price })
 
-        // Update cache
         ethPriceCache = { price, timestamp: now }
-
         return price
     } catch (error) {
         debugError('getEthPrice', 'Error fetching price', error)
 
-        // Fallback: use cached price even if expired, or default to $3000
         if (ethPriceCache.price > 0) {
             debugLog('getEthPrice', 'Using expired cache', { price: ethPriceCache.price })
             return ethPriceCache.price
         }
 
         debugLog('getEthPrice', 'Using fallback price: 3000')
-        return 3000 // Fallback price
+        return 3000
     }
 }
 
@@ -128,7 +123,6 @@ async function checkBalance(userWallet: `0x${string}`, requiredEth: bigint): Pro
     } catch (error) {
         trackRpcError(error)
         debugError('checkBalance', 'Error checking balance', error)
-        // If we can't check, assume they have enough (let transaction fail naturally)
         return { hasEnough: true, balance: 0n }
     }
 }
@@ -141,9 +135,8 @@ debugLog('INIT', 'Bot instance created successfully')
 
 // Helper function to parse amount from args
 function parseAmountFromArgs(args: string[]): number | null {
-    // Find the first arg that looks like a number
     for (const arg of args) {
-        const cleaned = arg.replace(/,/g, '') // Remove commas
+        const cleaned = arg.replace(/,/g, '')
         const num = parseFloat(cleaned)
         if (!isNaN(num) && num > 0) {
             return num
@@ -194,283 +187,110 @@ bot.onSlashCommand('time', async (handler, { channelId }) => {
     debugLog('/time', 'END')
 })
 
-// Simple message responses
-bot.onMessage(async (handler, event) => {
-    const { message, channelId, eventId, createdAt, isMentioned } = event
-    const lowerMsg = message.toLowerCase()
+// /stats - town statistics
+bot.onSlashCommand('stats', async (handler, event) => {
+    const { channelId, spaceId } = event
 
-    debugLog('onMessage', 'Received message', {
-        isMentioned,
-        hasKeywords: lowerMsg.includes('hello') || lowerMsg.includes('ping')
-    })
+    debugLog('/stats', 'START', { spaceId })
     trackRpcCall()
-
-    // Respond when bot is mentioned
-    if (isMentioned) {
-        await handler.sendMessage(
-            channelId,
-            '👋 Hi! I help you send $ tips (auto-converted to ETH on Base).\n\nType `/help` to see all available commands!'
-        )
-        trackRpcSuccess()
-        return
-    }
-
-    if (lowerMsg.includes('hello') || lowerMsg.includes('hi')) {
-        await handler.sendMessage(channelId, 'Hello there! 👋 Type `/help` to see what I can do!')
-        trackRpcSuccess()
-        return
-    }
-
-    if (lowerMsg.includes('ping')) {
-        const latency = new Date().getTime() - createdAt.getTime()
-        await handler.sendMessage(channelId, `Pong! 🏓 Latency: ${latency}ms`)
-        trackRpcSuccess()
-        return
-    }
-
-    if (lowerMsg.includes('react')) {
-        await handler.sendReaction(channelId, eventId, '👍')
-        trackRpcSuccess()
-        return
-    }
-    
-    trackRpcSuccess()
-})
-
-bot.onReaction(async (handler, { reaction, channelId }) => {
-    debugLog('onReaction', 'Received reaction', { reaction })
-    trackRpcCall()
-    
-    if (reaction === '👋') {
-        await handler.sendMessage(channelId, 'I saw your wave! 👋')
-    }
-    
-    trackRpcSuccess()
-})
-
-// /tip @username amount
-bot.onSlashCommand('tip', async (handler, event) => {
-    const { args, mentions, channelId, userId, eventId, spaceId } = event
-
-    debugLog('/tip', 'START', { userId, mentions: mentions.length, args })
-    trackRpcCall()
-
-    // Validate mentions
-    if (mentions.length === 0) {
-        debugLog('/tip', 'No mentions found')
-        await handler.sendMessage(channelId, '❌ Please mention a user to tip.\n**Usage:** `/tip @username amount`')
-        trackRpcSuccess()
-        return
-    }
-
-    if (mentions.length > 1) {
-        debugLog('/tip', 'Too many mentions', { count: mentions.length })
-        await handler.sendMessage(channelId, '❌ Please mention only ONE user. Use `/tipsplit` for multiple users.')
-        trackRpcSuccess()
-        return
-    }
-
-    const recipient = mentions[0]
-
-    // Check if user is trying to tip themselves
-    if (recipient.userId === userId) {
-        debugLog('/tip', 'Self-tip attempt')
-        await handler.sendMessage(channelId, '❌ You cannot tip yourself! 😅')
-        trackRpcSuccess()
-        return
-    }
-
-    // Parse amount in USD
-    const usdAmount = parseAmountFromArgs(args)
-    debugLog('/tip', 'Parsed amount', { usdAmount, args })
-
-    if (usdAmount === null) {
-        await handler.sendMessage(channelId, '❌ Please provide a valid amount.\n**Usage:** `/tip @username amount`')
-        trackRpcSuccess()
-        return
-    }
-
-    if (usdAmount <= 0) {
-        await handler.sendMessage(channelId, '❌ Amount must be greater than 0.')
-        trackRpcSuccess()
-        return
-    }
 
     try {
-        // Get recipient's wallet
-        debugLog('/tip', 'Getting recipient wallet', { recipientId: recipient.userId })
-        const recipientWallet = await getSmartAccountFromUserId(bot, { userId: recipient.userId })
-        debugLog('/tip', 'Recipient wallet found', { wallet: recipientWallet?.slice(0, 10) + '...' })
-
-        if (!recipientWallet) {
-            await handler.sendMessage(channelId, '❌ Unable to find wallet for the mentioned user.')
-            trackRpcSuccess()
-            return
-        }
-
-        // Get sender's wallet to check balance
-        debugLog('/tip', 'Getting sender wallet')
-        const senderWallet = await getSmartAccountFromUserId(bot, { userId: userId })
-        if (!senderWallet) {
-            await handler.sendMessage(channelId, '❌ Unable to find your wallet.')
-            trackRpcSuccess()
-            return
-        }
-
-        // Convert USD to ETH
-        const ethAmount = await usdToEth(usdAmount)
-        const ethAmountWei = parseEther(ethAmount.toString())
-
-        debugLog('/tip', 'USD to ETH conversion', { usd: usdAmount, eth: ethAmount })
-
-        // Check if sender has enough balance
-        const { hasEnough, balance } = await checkBalance(senderWallet as `0x${string}`, ethAmountWei)
-
-        if (!hasEnough) {
-            const balanceUsd = (parseFloat(formatEther(balance)) * await getEthPrice()).toFixed(2)
-            debugLog('/tip', 'Insufficient balance', { required: usdAmount, balance: balanceUsd })
-            await handler.sendMessage(
-                channelId,
-                `❌ Insufficient balance!\n\n` +
-                `**Required:** $${usdAmount.toFixed(2)} (~${ethAmount.toFixed(6)} ETH)\n` +
-                `**Your balance:** $${balanceUsd} (~${formatEther(balance)} ETH)\n\n` +
-                `Please add more funds to your wallet.`
-            )
-            trackRpcSuccess()
-            return
-        }
-
-        // Store pending tip in database
-        const requestId = `tip-${eventId}`
-        debugLog('/tip', 'Sending confirmation dialog', { requestId })
+        debugLog('/stats', 'Calling getGlobalStats...')
+        const stats = await getGlobalStats(spaceId)
+        debugLog('/stats', 'Got stats from DB', { stats })
         
-        const sentMessage = await handler.sendInteractionRequest(channelId, {
-            case: 'form',
-            value: {
-                id: requestId,
-                title: `💸 Confirm Tip`,
-                description: `Send $${usdAmount.toFixed(2)} (~${ethAmount.toFixed(6)} ETH) to <@${recipient.userId}>?\n\nRecipient wallet: ${recipientWallet.slice(0, 6)}...${recipientWallet.slice(-4)}`,
-                components: [
-                    {
-                        id: 'confirm',
-                        component: {
-                            case: 'button',
-                            value: { label: '✅ Confirm' }
-                        }
-                    },
-                    {
-                        id: 'cancel',
-                        component: {
-                            case: 'button',
-                            value: { label: '❌ Cancel' }
-                        }
-                    }
-                ]
-            }
-        }, hexToBytes(userId as `0x${string}`))
-
-        const messageId = sentMessage?.eventId || sentMessage?.id || eventId
-        debugLog('/tip', 'Confirmation sent, saving to DB', { messageId })
-
-        await savePendingTransaction(spaceId, requestId, 'tip', userId, {
-            recipientId: recipient.userId,
-            recipientName: recipient.displayName,
-            recipientWallet,
-            usdAmount,
-            ethAmount,
-            channelId
-        }, messageId, channelId)
-
-        debugLog('/tip', 'END - Success')
-        trackRpcSuccess()
-
-    } catch (error) {
-        debugError('/tip', 'Error processing tip', error)
-        trackRpcError(error)
-        await handler.sendMessage(channelId, '❌ Failed to process tip request. Please try again.')
-    }
-})
-
-// Placeholder for other commands - similar logging pattern
-// I'll abbreviate the rest to save space, but same pattern applies
-
-bot.onSlashCommand('tipsplit', async (handler, event) => {
-    debugLog('/tipsplit', 'START', { userId: event.userId, mentions: event.mentions.length })
-    trackRpcCall()
-    // ... existing tipsplit code with debug logs added at key points ...
-})
-
-bot.onSlashCommand('donate', async (handler, event) => {
-    debugLog('/donate', 'START', { userId: event.userId })
-    trackRpcCall()
-    // ... existing donate code ...
-})
-
-bot.onSlashCommand('stats', async (handler, event) => {
-    debugLog('/stats', 'START')
-    trackRpcCall()
-    // ... existing stats code ...
-})
-
-bot.onSlashCommand('leaderboard', async (handler, event) => {
-    debugLog('/leaderboard', 'START')
-    trackRpcCall()
-    // ... existing leaderboard code ...
-})
-
-bot.onSlashCommand('request', async (handler, event) => {
-    debugLog('/request', 'START', { userId: event.userId })
-    trackRpcCall()
-    // ... existing request code ...
-})
-
-bot.onSlashCommand('contribute', async (handler, event) => {
-    debugLog('/contribute', 'START', { userId: event.userId })
-    trackRpcCall()
-    // ... existing contribute code ...
-})
-
-// Handle interaction responses (button clicks and transaction confirmations)
-bot.onInteractionResponse(async (handler, event) => {
-    const contentCase = event.response.payload.content?.case
-    
-    debugLog('onInteractionResponse', 'Received interaction', {
-        contentCase,
-        eventId: event.eventId,
-        userId: event.userId
-    })
-    trackRpcCall()
-
-    if (contentCase === 'form') {
-        await handleFormResponse(handler, event, getEthPrice)
-    } else if (contentCase === 'transaction') {
-        await handleTransactionResponse(handler, event, getEthPrice)
-    } else {
-        debugLog('onInteractionResponse', 'Unknown content case', { contentCase })
-    }
-    
-    trackRpcSuccess()
-})
-
-// Handle direct tips to the bot
-bot.onTip(async (handler, event) => {
-    debugLog('onTip', 'Received tip', { receiverAddress: event.receiverAddress.slice(0, 10) + '...' })
-    trackRpcCall()
-    
-    const { receiverAddress, amount, channelId } = event
-
-    if (receiverAddress.toLowerCase() === bot.appAddress.toLowerCase()) {
-        const ethAmount = parseFloat(formatUnits(amount, ETH_DECIMALS))
         const ethPrice = await getEthPrice()
-        const usdAmount = (ethAmount * ethPrice).toFixed(2)
 
+        const tipsVolume = parseFloat(stats.total_tips_volume) || 0
+        const donationsVolume = parseFloat(stats.total_donations_volume) || 0
+        const crowdfundingVolume = parseFloat(stats.total_crowdfunding_volume) || 0
+
+        const tipsEth = tipsVolume / ethPrice
+        const donationsEth = donationsVolume / ethPrice
+        const crowdfundingEth = crowdfundingVolume / ethPrice
+        const totalEth = (tipsVolume + donationsVolume + crowdfundingVolume) / ethPrice
+
+        debugLog('/stats', 'Sending response...')
         await handler.sendMessage(
             channelId,
-            `❤️ Thank you for the tip! Received ~$${usdAmount} (${ethAmount.toFixed(6)} ETH)! 🙏`
+            `**📊 TipsoBot Statistics**\n\n` +
+                `**💸 Tips:**\n` +
+                `• Volume: $${tipsVolume.toFixed(2)} (~${tipsEth.toFixed(6)} ETH)\n` +
+                `• Count: ${stats.total_tips_count} transactions\n\n` +
+                `**❤️ Donations to Bot:**\n` +
+                `• Volume: $${donationsVolume.toFixed(2)} (~${donationsEth.toFixed(6)} ETH)\n` +
+                `• Count: ${stats.total_donations_count} donations\n\n` +
+                `**💰 Crowdfunding:**\n` +
+                `• Volume: $${crowdfundingVolume.toFixed(2)} (~${crowdfundingEth.toFixed(6)} ETH)\n` +
+                `• Requests: ${stats.total_crowdfunding_count} funded\n\n` +
+                `**🌐 Total Volume:** $${(tipsVolume + donationsVolume + crowdfundingVolume).toFixed(2)} (~${totalEth.toFixed(6)} ETH)\n\n` +
+                `Use \`/leaderboard\` to see top contributors! 🏆`
         )
+        
+        trackRpcSuccess()
+        debugLog('/stats', 'END - Success')
+    } catch (error) {
+        debugError('/stats', 'Error', error)
+        trackRpcError(error)
+        await handler.sendMessage(channelId, '❌ Failed to fetch statistics.')
     }
+})
+
+// /leaderboard - top tippers and donators in this town
+bot.onSlashCommand('leaderboard', async (handler, event) => {
+    const { channelId, spaceId } = event
     
-    trackRpcSuccess()
+    debugLog('/leaderboard', 'START', { spaceId })
+    trackRpcCall()
+    
+    try {
+        debugLog('/leaderboard', 'Fetching top tippers...')
+        const topTippers = await getTopTippers(spaceId, 5)
+        debugLog('/leaderboard', 'Got tippers', { count: topTippers.length })
+        
+        debugLog('/leaderboard', 'Fetching top donators...')
+        const topDonators = await getTopDonators(spaceId, 5)
+        debugLog('/leaderboard', 'Got donators', { count: topDonators.length })
+
+        let message = `**🏆 Leaderboard 🏆**\n\n`
+
+        message += `**Top Tippers:**\n`
+        if (topTippers.length === 0) {
+            message += `_No tippers yet_\n`
+        } else {
+            topTippers.forEach((entry, index) => {
+                const medal = index === 0 ? '🥇' : index === 1 ? '🥈' : index === 2 ? '🥉' : `${index + 1}.`
+                const amount = parseFloat(entry.amount) || 0
+                message += `${medal} <@${entry.user_id}>: $${amount.toFixed(2)} (${entry.count} tips)\n`
+            })
+        }
+
+        message += `\n**Top Donators:**\n`
+        if (topDonators.length === 0) {
+            message += `_No donators yet_\n`
+        } else {
+            topDonators.forEach((entry, index) => {
+                const medal = index === 0 ? '🥇' : index === 1 ? '🥈' : index === 2 ? '🥉' : `${index + 1}.`
+                const amount = parseFloat(entry.amount) || 0
+                message += `${medal} <@${entry.user_id}>: $${amount.toFixed(2)} (${entry.count} donations)\n`
+            })
+        }
+
+        const mentions = [
+            ...topTippers.map(e => ({ userId: e.user_id, displayName: e.display_name || 'User' })),
+            ...topDonators.map(e => ({ userId: e.user_id, displayName: e.display_name || 'User' }))
+        ]
+
+        debugLog('/leaderboard', 'Sending response...')
+        await handler.sendMessage(channelId, message, { mentions })
+        
+        trackRpcSuccess()
+        debugLog('/leaderboard', 'END - Success')
+    } catch (error) {
+        debugError('/leaderboard', 'Error', error)
+        trackRpcError(error)
+        await handler.sendMessage(channelId, '❌ Failed to fetch leaderboard.')
+    }
 })
 
 // Initialize database and start bot
@@ -481,14 +301,11 @@ debugLog('INIT', 'Database initialized successfully')
 debugLog('INIT', 'Starting bot...')
 const app = bot.start()
 
-// Start health monitoring
 startHealthMonitor()
 debugLog('INIT', 'Health monitor started')
 
-// Health check route
 app.get('/', (c) => c.text('TipsoBot is running! 💸'))
 
-// Webhook route with detailed logging
 app.post('/webhook', async (c) => {
     const body = await c.req.json()
     
@@ -502,7 +319,6 @@ app.post('/webhook', async (c) => {
     return c.json({ ok: true }, 200)
 })
 
-// Cleanup old pending transactions every hour
 setInterval(async () => {
     try {
         debugLog('CLEANUP', 'Running cleanup...')
@@ -511,9 +327,8 @@ setInterval(async () => {
     } catch (error) {
         debugError('CLEANUP', 'Error during cleanup', error)
     }
-}, 60 * 60 * 1000) // 1 hour
+}, 60 * 60 * 1000)
 
-// Graceful shutdown
 const shutdown = async (signal: string) => {
     debugLog('SHUTDOWN', `Received ${signal}, shutting down...`)
     try {
@@ -529,7 +344,6 @@ const shutdown = async (signal: string) => {
 process.on('SIGTERM', () => shutdown('SIGTERM'))
 process.on('SIGINT', () => shutdown('SIGINT'))
 
-// Global error handlers
 process.on('unhandledRejection', (error: any) => {
     debugError('GLOBAL', 'Unhandled rejection', error)
     trackRpcError(error)
