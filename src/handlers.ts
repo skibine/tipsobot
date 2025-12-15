@@ -334,11 +334,13 @@ export async function handleTransactionResponse(
             // Update user stats (per space/town)
             await upsertUserStats(spaceId, data.contributorId, data.contributorId, {
                 sentAmount: data.contributionUsd,
-                tipsSent: 1
+                tipsSent: 1,
+                tipsSentAmount: data.contributionUsd
             })
             await upsertUserStats(spaceId, data.creatorId, data.creatorName, {
                 receivedAmount: data.contributionUsd,
-                tipsReceived: 1
+                tipsReceived: 1,
+                tipsReceivedAmount: data.contributionUsd
             })
 
             // Send success message with transaction hash
@@ -414,11 +416,13 @@ export async function handleTransactionResponse(
             // Update user stats (per space/town)
             await upsertUserStats(spaceId, pendingTx.userId, pendingTx.userId, {
                 sentAmount: data.usdAmount,
-                tipsSent: 1
+                tipsSent: 1,
+                tipsSentAmount: data.usdAmount
             })
             await upsertUserStats(spaceId, data.recipientId, data.recipientName, {
                 receivedAmount: data.usdAmount,
-                tipsReceived: 1
+                tipsReceived: 1,
+                tipsReceivedAmount: data.usdAmount
             })
 
             // Send success message with transaction hash
@@ -486,14 +490,16 @@ export async function handleTransactionResponse(
                 // Update user stats (per space/town)
                 await upsertUserStats(spaceId, pendingTx.userId, pendingTx.userId, {
                     sentAmount: data.totalUsd,
-                    tipsSent: 1
+                    tipsSent: 1,
+                    tipsSentAmount: data.totalUsd
                 })
 
                 // Update each recipient's stats
                 for (const recipient of data.recipients) {
                     await upsertUserStats(spaceId, recipient.userId, recipient.displayName, {
                         receivedAmount: recipient.usdAmount,
-                        tipsReceived: 1
+                        tipsReceived: 1,
+                        tipsReceivedAmount: recipient.usdAmount
                     })
                 }
 
@@ -544,8 +550,8 @@ export async function handleTransactionResponse(
 
             // Update user stats (per space/town)
             await upsertUserStats(spaceId, pendingTx.userId, pendingTx.userId, {
-                sentAmount: data.usdAmount,
-                donations: 1
+                donations: 1,
+                donationsSentAmount: data.usdAmount
             })
 
             // Send success message with transaction hash
