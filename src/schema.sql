@@ -22,6 +22,10 @@ CREATE TABLE IF NOT EXISTS user_stats (
     tips_sent INTEGER DEFAULT 0,
     tips_received INTEGER DEFAULT 0,
     donations INTEGER DEFAULT 0,
+    tips_sent_amount DECIMAL(20, 2) DEFAULT 0,
+    tips_received_amount DECIMAL(20, 2) DEFAULT 0,
+    donations_sent_amount DECIMAL(20, 2) DEFAULT 0,
+    donations_received_amount DECIMAL(20, 2) DEFAULT 0,
     display_name VARCHAR(255),
     updated_at TIMESTAMP DEFAULT NOW(),
     PRIMARY KEY (space_id, user_id)
@@ -68,12 +72,18 @@ CREATE TABLE IF NOT EXISTS pending_transactions (
     type VARCHAR(20) NOT NULL, -- 'tip', 'tipsplit', 'donate', 'contribute'
     user_id VARCHAR(66) NOT NULL,
     data JSONB NOT NULL,
+    message_id VARCHAR(100),
+    channel_id VARCHAR(100),
+    transaction_message_id VARCHAR(100),
+    status VARCHAR(20) DEFAULT 'pending',
     created_at TIMESTAMP DEFAULT NOW()
 );
 
 -- Indexes for performance
 CREATE INDEX IF NOT EXISTS idx_user_stats_space_sent ON user_stats(space_id, total_sent DESC);
 CREATE INDEX IF NOT EXISTS idx_user_stats_space_received ON user_stats(space_id, total_received DESC);
+CREATE INDEX IF NOT EXISTS idx_user_stats_tips_sent ON user_stats(space_id, tips_sent_amount DESC);
+CREATE INDEX IF NOT EXISTS idx_user_stats_donations_sent ON user_stats(space_id, donations_sent_amount DESC);
 CREATE INDEX IF NOT EXISTS idx_payment_requests_space ON payment_requests(space_id);
 CREATE INDEX IF NOT EXISTS idx_payment_requests_channel ON payment_requests(channel_id);
 CREATE INDEX IF NOT EXISTS idx_contributions_request ON contributions(request_id);
