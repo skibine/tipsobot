@@ -6,9 +6,9 @@ import { join } from 'path'
 export const pool = new Pool({
     connectionString: process.env.DATABASE_URL,
     ssl: process.env.DATABASE_SSL === 'true' ? { rejectUnauthorized: false } : false,
-    max: 20, // Maximum number of clients in the pool
+    max: 20,
     idleTimeoutMillis: 30000,
-    connectionTimeoutMillis: 2000,
+    connectionTimeoutMillis: 5000,
 })
 
 // Initialize database schema
@@ -20,12 +20,22 @@ export async function initDatabase() {
 
         // Run migrations
         console.log('[DB] Running migrations...')
+        
+        // Add new amount fields for separate tips/donations tracking
+        await pool.query(`
+            ALTER TABLE user_stats
+            ADD COLUMN IF NOT EXISTS tips_sent_amount DECIMAL(20, 2) DEFAULT 0,
+            ADD COLUMN IF NOT EXISTS tips_received_amount DECIMAL(20, 2) DEFAULT 0,
+            ADD COLUMN IF NOT EXISTS donations_sent_amount DECIMAL(20, 2) DEFAULT 0,
+            ADD COLUMN IF NOT EXISTS donations_received_amount DECIMAL(20, 2) DEFAULT 0;
+        `)
+        
         await pool.query(`
             ALTER TABLE pending_transactions
             ADD COLUMN IF NOT EXISTS transaction_message_id VARCHAR(100);
         `)
+        
         console.log('[DB] Migrations completed')
-
         console.log('[DB] Database schema initialized successfully')
     } catch (error) {
         console.error('[DB] Failed to initialize database:', error)
@@ -91,7 +101,6 @@ export async function updateGlobalStats(spaceId: string, stats: {
 
     updates.push('updated_at = NOW()')
 
-    // Ensure row exists
     await pool.query(
         'INSERT INTO global_stats (space_id) VALUES ($1) ON CONFLICT (space_id) DO NOTHING',
         [spaceId]
@@ -122,6 +131,10 @@ export async function upsertUserStats(
         tipsSent?: number
         tipsReceived?: number
         donations?: number
+        tipsSentAmount?: number
+        tipsReceivedAmount?: number
+        donationsSentAmount?: number
+        donationsReceivedAmount?: number
     }
 ) {
     const updates: string[] = []
@@ -148,12 +161,28 @@ export async function upsertUserStats(
         updates.push(`donations = user_stats.donations + $${paramIndex++}`)
         values.push(stats.donations)
     }
+    if (stats.tipsSentAmount !== undefined) {
+        updates.push(`tips_sent_amount = user_stats.tips_sent_amount + $${paramIndex++}`)
+        values.push(stats.tipsSentAmount)
+    }
+    if (stats.tipsReceivedAmount !== undefined) {
+        updates.push(`tips_received_amount = user_stats.tips_received_amount + $${paramIndex++}`)
+        values.push(stats.tipsReceivedAmount)
+    }
+    if (stats.donationsSentAmount !== undefined) {
+        updates.push(`donations_sent_amount = user_stats.donations_sent_amount + $${paramIndex++}`)
+        values.push(stats.donationsSentAmount)
+    }
+    if (stats.donationsReceivedAmount !== undefined) {
+        updates.push(`donations_received_amount = user_stats.donations_received_amount + $${paramIndex++}`)
+        values.push(stats.donationsReceivedAmount)
+    }
 
     updates.push('updated_at = NOW()')
 
     await pool.query(
-        `INSERT INTO user_stats (space_id, user_id, display_name, total_sent, total_received, tips_sent, tips_received, donations)
-         VALUES ($1, $2, $3, 0, 0, 0, 0, 0)
+        `INSERT INTO user_stats (space_id, user_id, display_name, total_sent, total_received, tips_sent, tips_received, donations, tips_sent_amount, tips_received_amount, donations_sent_amount, donations_received_amount)
+         VALUES ($1, $2, $3, 0, 0, 0, 0, 0, 0, 0, 0, 0)
          ON CONFLICT (space_id, user_id) DO UPDATE SET
          display_name = EXCLUDED.display_name,
          ${updates.join(', ')}`,
@@ -164,10 +193,10 @@ export async function upsertUserStats(
 // Leaderboard Functions (per space/town)
 export async function getTopTippers(spaceId: string, limit: number = 10) {
     const result = await pool.query(
-        `SELECT user_id, display_name, total_sent as amount, tips_sent as count
+        `SELECT user_id, display_name, tips_sent_amount as amount, tips_sent as count
          FROM user_stats
          WHERE space_id = $1 AND tips_sent > 0
-         ORDER BY total_sent DESC
+         ORDER BY tips_sent_amount DESC
          LIMIT $2`,
         [spaceId, limit]
     )
@@ -176,10 +205,10 @@ export async function getTopTippers(spaceId: string, limit: number = 10) {
 
 export async function getTopDonators(spaceId: string, limit: number = 10) {
     const result = await pool.query(
-        `SELECT user_id, display_name, total_sent as amount, donations as count
+        `SELECT user_id, display_name, donations_sent_amount as amount, donations as count
          FROM user_stats
          WHERE space_id = $1 AND donations > 0
-         ORDER BY total_sent DESC, donations DESC
+         ORDER BY donations_sent_amount DESC
          LIMIT $2`,
         [spaceId, limit]
     )
@@ -221,14 +250,12 @@ export async function addContribution(data: {
     try {
         await client.query('BEGIN')
 
-        // Add contribution
         await client.query(
             `INSERT INTO contributions (request_id, contributor_id, contributor_name, amount)
              VALUES ($1, $2, $3, $4)`,
             [data.requestId, data.contributorId, data.contributorName, data.amount]
         )
 
-        // Update payment request total
         const result = await client.query(
             `UPDATE payment_requests
              SET total_collected = total_collected + $1,
@@ -266,7 +293,7 @@ export async function checkCooldown(spaceId: string, userId: string, command: st
     )
 
     if (result.rows.length === 0) {
-        return true // No cooldown record, allowed
+        return true
     }
 
     const lastUsed = new Date(result.rows[0].last_used).getTime()
@@ -363,14 +390,12 @@ export async function deletePendingTransaction(id: string) {
     await pool.query('DELETE FROM pending_transactions WHERE id = $1', [id])
 }
 
-// Cleanup old pending transactions (older than 1 hour)
 export async function cleanupOldTransactions() {
     await pool.query(
         `DELETE FROM pending_transactions WHERE created_at < NOW() - INTERVAL '1 hour'`
     )
 }
 
-// Graceful shutdown
 export async function closeDatabase() {
     await pool.end()
     console.log('[DB] Database connection closed')
