@@ -1,7 +1,9 @@
 import { makeTownsBot, getSmartAccountFromUserId } from '@towns-protocol/bot'
-import { parseUnits, hexToBytes, formatUnits, parseEther, formatEther } from 'viem'
+import { parseUnits, hexToBytes, formatUnits, parseEther, formatEther, isAddress } from 'viem'
 import { createPublicClient, http } from 'viem'
 import { base } from 'viem/chains'
+import { execute } from 'viem/experimental/erc7821'
+import { waitForTransactionReceipt } from 'viem/actions'
 import commands from './commands'
 import {
     initDatabase,
@@ -145,6 +147,66 @@ function parseAmountFromArgs(args: string[]): number | null {
     return null
 }
 
+// Helper function to parse recipients (mentions + wallet addresses)
+type Recipient = {
+    type: 'mention' | 'address'
+    userId?: string
+    displayName?: string
+    wallet: `0x${string}`
+}
+
+async function parseRecipients(
+    args: string[],
+    mentions: Array<{ userId: string; displayName: string }>
+): Promise<{ recipients: Recipient[], errors: string[] }> {
+    const recipients: Recipient[] = []
+    const errors: string[] = []
+    const seenWallets = new Set<string>()
+
+    // Add mentions
+    for (const mention of mentions) {
+        try {
+            const wallet = await getSmartAccountFromUserId(bot, { userId: mention.userId })
+            if (!wallet) {
+                errors.push(`Unable to find wallet for @${mention.displayName}`)
+                continue
+            }
+            const walletLower = wallet.toLowerCase()
+            if (seenWallets.has(walletLower)) {
+                errors.push(`Duplicate recipient: @${mention.displayName}`)
+                continue
+            }
+            seenWallets.add(walletLower)
+            recipients.push({
+                type: 'mention',
+                userId: mention.userId,
+                displayName: mention.displayName,
+                wallet: wallet as `0x${string}`
+            })
+        } catch (error) {
+            errors.push(`Error resolving @${mention.displayName}`)
+        }
+    }
+
+    // Add direct wallet addresses from args
+    for (const arg of args) {
+        if (arg.startsWith('0x') && isAddress(arg)) {
+            const walletLower = arg.toLowerCase()
+            if (seenWallets.has(walletLower)) {
+                errors.push(`Duplicate recipient: ${arg.slice(0, 6)}...${arg.slice(-4)}`)
+                continue
+            }
+            seenWallets.add(walletLower)
+            recipients.push({
+                type: 'address',
+                wallet: arg as `0x${string}`
+            })
+        }
+    }
+
+    return { recipients, errors }
+}
+
 bot.onSlashCommand('help', async (handler, { channelId }) => {
     debugLog('/help', 'START')
     trackRpcCall()
@@ -155,8 +217,9 @@ bot.onSlashCommand('help', async (handler, { channelId }) => {
         channelId,
         `**TipsoBot - Send $ tips on Base** 💸\n\n` +
             `**Tipping:**\n` +
-            `• \`/tip @user amount\` - Send money to a user\n` +
-            `• \`/tipsplit @user1 @user2 amount\` - Split equally\n` +
+            `• \`/tip @user amount\` - Send to Towns user\n` +
+            `• \`/tip 0x... amount\` - Send to wallet address\n` +
+            `• \`/tipsplit @user1 @user2 0x... amount\` - Split equally (one signature!)\n` +
             `• \`/donate amount\` - Support the bot\n\n` +
             `**Crowdfunding:**\n` +
             `• \`/request amount description\` - Create payment request\n` +
@@ -169,7 +232,8 @@ bot.onSlashCommand('help', async (handler, { channelId }) => {
             `• \`/time\` - Current server time\n\n` +
             `**Info:**\n` +
             `• All amounts in USD ($), auto-converted to ETH\n` +
-            `• Current ETH price: $${ethPrice.toFixed(2)}\n`
+            `• Current ETH price: $${ethPrice.toFixed(2)}\n` +
+            `• tipsplit uses bot batch - only ONE signature! ⚡\n`
     )
     
     trackRpcSuccess()
@@ -240,28 +304,39 @@ bot.onReaction(async (handler, { reaction, channelId }) => {
     trackRpcSuccess()
 })
 
-// /tip @username amount
+// /tip @username amount OR /tip 0x... amount
 bot.onSlashCommand('tip', async (handler, event) => {
     const { args, mentions, channelId, userId, eventId, spaceId } = event
 
     debugLog('/tip', 'START', { userId, mentions: mentions.length, args })
     trackRpcCall()
 
-    if (mentions.length === 0) {
-        debugLog('/tip', 'No mentions found')
-        await handler.sendMessage(channelId, '❌ Please mention a user to tip.\n**Usage:** `/tip @username amount`')
+    const { recipients, errors } = await parseRecipients(args, mentions)
+
+    if (errors.length > 0) {
+        await handler.sendMessage(channelId, `❌ Errors:\n${errors.join('\n')}`)
         trackRpcSuccess()
         return
     }
 
-    if (mentions.length > 1) {
-        debugLog('/tip', 'Too many mentions', { count: mentions.length })
-        await handler.sendMessage(channelId, '❌ Please mention only ONE user. Use `/tipsplit` for multiple users.')
+    if (recipients.length === 0) {
+        debugLog('/tip', 'No recipients found')
+        await handler.sendMessage(
+            channelId,
+            '❌ Please mention a user or provide a wallet address.\n**Usage:** `/tip @user amount` or `/tip 0x... amount`'
+        )
         trackRpcSuccess()
         return
     }
 
-    const recipient = mentions[0]
+    if (recipients.length > 1) {
+        debugLog('/tip', 'Too many recipients', { count: recipients.length })
+        await handler.sendMessage(channelId, '❌ Please specify only ONE recipient. Use `/tipsplit` for multiple.')
+        trackRpcSuccess()
+        return
+    }
+
+    const recipient = recipients[0]
 
     if (recipient.userId === userId) {
         debugLog('/tip', 'Self-tip attempt')
@@ -274,7 +349,7 @@ bot.onSlashCommand('tip', async (handler, event) => {
     debugLog('/tip', 'Parsed amount', { usdAmount, args })
 
     if (usdAmount === null) {
-        await handler.sendMessage(channelId, '❌ Please provide a valid amount.\n**Usage:** `/tip @username amount`')
+        await handler.sendMessage(channelId, '❌ Please provide a valid amount.\n**Usage:** `/tip @user amount`')
         trackRpcSuccess()
         return
     }
@@ -286,16 +361,6 @@ bot.onSlashCommand('tip', async (handler, event) => {
     }
 
     try {
-        debugLog('/tip', 'Getting recipient wallet', { recipientId: recipient.userId })
-        const recipientWallet = await getSmartAccountFromUserId(bot, { userId: recipient.userId })
-        debugLog('/tip', 'Recipient wallet found', { wallet: recipientWallet?.slice(0, 10) + '...' })
-
-        if (!recipientWallet) {
-            await handler.sendMessage(channelId, '❌ Unable to find wallet for the mentioned user.')
-            trackRpcSuccess()
-            return
-        }
-
         debugLog('/tip', 'Getting sender wallet')
         const senderWallet = await getSmartAccountFromUserId(bot, { userId: userId })
         if (!senderWallet) {
@@ -325,6 +390,10 @@ bot.onSlashCommand('tip', async (handler, event) => {
             return
         }
 
+        const recipientDisplay = recipient.type === 'mention'
+            ? `<@${recipient.userId}>`
+            : `${recipient.wallet.slice(0, 6)}...${recipient.wallet.slice(-4)}`
+
         const requestId = `tip-${eventId}`
         debugLog('/tip', 'Sending confirmation dialog', { requestId })
         
@@ -333,7 +402,7 @@ bot.onSlashCommand('tip', async (handler, event) => {
             value: {
                 id: requestId,
                 title: `💸 Confirm Tip`,
-                description: `Send $${usdAmount.toFixed(2)} (~${ethAmount.toFixed(6)} ETH) to <@${recipient.userId}>?\n\nRecipient wallet: ${recipientWallet.slice(0, 6)}...${recipientWallet.slice(-4)}`,
+                description: `Send $${usdAmount.toFixed(2)} (~${ethAmount.toFixed(6)} ETH) to ${recipientDisplay}?\n\nRecipient wallet: ${recipient.wallet.slice(0, 6)}...${recipient.wallet.slice(-4)}`,
                 components: [
                     {
                         id: 'confirm',
@@ -359,7 +428,7 @@ bot.onSlashCommand('tip', async (handler, event) => {
         await savePendingTransaction(spaceId, requestId, 'tip', userId, {
             recipientId: recipient.userId,
             recipientName: recipient.displayName,
-            recipientWallet,
+            recipientWallet: recipient.wallet,
             usdAmount,
             ethAmount,
             channelId
@@ -375,21 +444,32 @@ bot.onSlashCommand('tip', async (handler, event) => {
     }
 })
 
-// /tipsplit @user1 @user2 @user3 amount
+// /tipsplit @user1 @user2 0x... amount - NEW: Single signature via bot!
 bot.onSlashCommand('tipsplit', async (handler, event) => {
     const { args, mentions, channelId, userId, eventId, spaceId } = event
 
     debugLog('/tipsplit', 'START', { userId, mentions: mentions.length, args })
     trackRpcCall()
 
-    if (mentions.length < 2) {
-        debugLog('/tipsplit', 'Not enough mentions', { count: mentions.length })
-        await handler.sendMessage(channelId, '❌ Please mention at least 2 users.\n**Usage:** `/tipsplit @user1 @user2 amount`')
+    const { recipients, errors } = await parseRecipients(args, mentions)
+
+    if (errors.length > 0) {
+        await handler.sendMessage(channelId, `❌ Errors:\n${errors.join('\n')}`)
         trackRpcSuccess()
         return
     }
 
-    const selfTip = mentions.find(m => m.userId === userId)
+    if (recipients.length < 2) {
+        debugLog('/tipsplit', 'Not enough recipients', { count: recipients.length })
+        await handler.sendMessage(
+            channelId,
+            '❌ Please specify at least 2 recipients.\n**Usage:** `/tipsplit @user1 @user2 amount`'
+        )
+        trackRpcSuccess()
+        return
+    }
+
+    const selfTip = recipients.find(r => r.userId === userId)
     if (selfTip) {
         debugLog('/tipsplit', 'User included themselves')
         await handler.sendMessage(channelId, '❌ You cannot include yourself in a tip split! 😅')
@@ -401,7 +481,10 @@ bot.onSlashCommand('tipsplit', async (handler, event) => {
     debugLog('/tipsplit', 'Parsed amount', { totalUsd, args })
 
     if (totalUsd === null) {
-        await handler.sendMessage(channelId, '❌ Please provide a valid amount.\n**Usage:** `/tipsplit @user1 @user2 amount`')
+        await handler.sendMessage(
+            channelId,
+            '❌ Please provide a valid amount.\n**Usage:** `/tipsplit @user1 @user2 amount`'
+        )
         trackRpcSuccess()
         return
     }
@@ -412,7 +495,8 @@ bot.onSlashCommand('tipsplit', async (handler, event) => {
         return
     }
 
-    const splitUsd = parseFloat((totalUsd / mentions.length).toFixed(2))
+    const splitUsd = parseFloat((totalUsd / recipients.length).toFixed(2))
+    const splitEth = await usdToEth(splitUsd)
 
     try {
         debugLog('/tipsplit', 'Getting sender wallet')
@@ -443,42 +527,31 @@ bot.onSlashCommand('tipsplit', async (handler, event) => {
             return
         }
 
-        const splitEth = await usdToEth(splitUsd)
-
-        debugLog('/tipsplit', 'Getting recipient wallets...')
-        const recipients = []
-        for (const mention of mentions) {
-            const wallet = await getSmartAccountFromUserId(bot, { userId: mention.userId })
-            if (!wallet) {
-                await handler.sendMessage(channelId, `❌ Unable to find wallet for <@${mention.userId}> (${mention.displayName})`)
-                trackRpcSuccess()
-                return
-            }
-            recipients.push({
-                userId: mention.userId,
-                displayName: mention.displayName,
-                wallet: wallet as `0x${string}`,
-                amount: splitEth
-            })
-        }
-        debugLog('/tipsplit', 'All wallets found', { count: recipients.length })
-
         const breakdown = recipients
-            .map(r => `  • $${splitUsd.toFixed(2)} (~${r.amount.toFixed(6)} ETH) → <@${r.userId}>`)
+            .map(r => {
+                const display = r.type === 'mention'
+                    ? `<@${r.userId}>`
+                    : `${r.wallet.slice(0, 6)}...${r.wallet.slice(-4)}`
+                return `  • $${splitUsd.toFixed(2)} (~${splitEth.toFixed(6)} ETH) → ${display}`
+            })
             .join('\n')
+
+        // NEW: User sends to BOT, bot does batch!
+        const requestId = `tipsplit-${eventId}`
+        debugLog('/tipsplit', 'Requesting payment to bot', { requestId })
 
         const sentMessage = await handler.sendInteractionRequest(channelId, {
             case: 'form',
             value: {
-                id: `tipsplit-${eventId}`,
+                id: requestId,
                 title: `💸 Confirm Split Tip`,
-                description: `Split $${totalUsd.toFixed(2)} (~${totalEth.toFixed(6)} ETH) between ${mentions.length} users:\n\n${breakdown}`,
+                description: `Send $${totalUsd.toFixed(2)} (~${totalEth.toFixed(6)} ETH) to TipsoBot.\n\nBot will split between ${recipients.length} recipients:\n\n${breakdown}\n\n⚡ ONE signature, bot handles distribution!`,
                 components: [
                     {
                         id: 'confirm',
                         component: {
                             case: 'button',
-                            value: { label: '✅ Confirm' }
+                            value: { label: '✅ Confirm & Send to Bot' }
                         }
                     },
                     {
@@ -492,7 +565,6 @@ bot.onSlashCommand('tipsplit', async (handler, event) => {
             }
         }, hexToBytes(userId as `0x${string}`))
 
-        const requestId = `tipsplit-${eventId}`
         const messageId = sentMessage?.eventId || sentMessage?.id || eventId
         
         debugLog('/tipsplit', 'Saving to DB', { requestId, messageId })
@@ -502,12 +574,11 @@ bot.onSlashCommand('tipsplit', async (handler, event) => {
                 displayName: r.displayName,
                 wallet: r.wallet,
                 usdAmount: splitUsd,
-                ethAmount: r.amount
+                ethAmount: splitEth
             })),
             totalUsd,
             totalEth,
-            channelId,
-            completedRecipients: []
+            channelId
         }, messageId, channelId)
 
         debugLog('/tipsplit', 'END - Success')
@@ -962,9 +1033,9 @@ bot.onInteractionResponse(async (handler, event) => {
     trackRpcCall()
 
     if (contentCase === 'form') {
-        await handleFormResponse(handler, event, getEthPrice)
+        await handleFormResponse(handler, event, getEthPrice, bot)
     } else if (contentCase === 'transaction') {
-        await handleTransactionResponse(handler, event, getEthPrice)
+        await handleTransactionResponse(handler, event, getEthPrice, bot)
     } else {
         debugLog('onInteractionResponse', 'Unknown content case', { contentCase })
     }
@@ -972,21 +1043,129 @@ bot.onInteractionResponse(async (handler, event) => {
     trackRpcSuccess()
 })
 
-// Handle direct tips to the bot
+// Handle direct tips to the bot + tipsplit distribution!
 bot.onTip(async (handler, event) => {
-    debugLog('onTip', 'Received tip', { receiverAddress: event.receiverAddress.slice(0, 10) + '...' })
+    debugLog('onTip', 'Received tip', {
+        receiverAddress: event.receiverAddress.slice(0, 10) + '...',
+        amount: formatEther(event.amount)
+    })
     trackRpcCall()
     
-    const { receiverAddress, amount, channelId } = event
+    const { receiverAddress, amount, channelId, messageId, userId: senderId } = event
 
-    if (receiverAddress.toLowerCase() === bot.appAddress.toLowerCase()) {
-        const ethAmount = parseFloat(formatUnits(amount, ETH_DECIMALS))
-        const ethPrice = await getEthPrice()
-        const usdAmount = (ethAmount * ethPrice).toFixed(2)
+    // Check if tip is for the bot
+    if (receiverAddress.toLowerCase() !== bot.appAddress.toLowerCase()) {
+        debugLog('onTip', 'Tip not for bot, ignoring')
+        trackRpcSuccess()
+        return
+    }
 
+    const ethAmount = parseFloat(formatUnits(amount, ETH_DECIMALS))
+    const ethPrice = await getEthPrice()
+    const usdAmount = ethAmount * ethPrice
+
+    debugLog('onTip', 'Tip is for bot', { ethAmount, usdAmount })
+
+    // Check if this is a tipsplit payment (find pending transaction)
+    // messageId from onTip is the eventId from /tipsplit command
+    const tipsplitId = `tipsplit-${messageId}`
+    const pendingTx = await getPendingTransaction(tipsplitId)
+
+    if (pendingTx && pendingTx.type === 'tipsplit') {
+        debugLog('onTip', 'This is a tipsplit payment!', { tipsplitId })
+        
+        try {
+            const data = pendingTx.data
+            const recipients = data.recipients
+
+            debugLog('onTip', 'Building batch calls', { recipientCount: recipients.length })
+
+            // Build batch calls for execute()
+            const calls = recipients.map((r: any) => ({
+                to: r.wallet as `0x${string}`,
+                value: parseEther(r.ethAmount.toString()),
+                data: '0x' as `0x${string}`
+            }))
+
+            debugLog('onTip', 'Executing batch transfer...')
+
+            // Execute batch transfer from bot
+            const hash = await execute(bot.viem, {
+                address: bot.appAddress as `0x${string}`,
+                account: bot.viem.account,
+                calls
+            })
+
+            debugLog('onTip', 'Batch transaction sent', { hash })
+
+            // Wait for confirmation
+            await waitForTransactionReceipt(bot.viem, { hash })
+
+            debugLog('onTip', 'Batch transaction confirmed!')
+
+            // Update stats
+            await updateGlobalStats(data.spaceId || pendingTx.space_id, {
+                tipsVolume: data.totalUsd,
+                tipsCount: 1
+            })
+
+            await upsertUserStats(data.spaceId || pendingTx.space_id, senderId, senderId, {
+                sentAmount: data.totalUsd,
+                tipsSent: 1,
+                tipsSentAmount: data.totalUsd
+            })
+
+            for (const recipient of recipients) {
+                if (recipient.userId) {
+                    await upsertUserStats(
+                        data.spaceId || pendingTx.space_id,
+                        recipient.userId,
+                        recipient.displayName || 'User',
+                        {
+                            receivedAmount: recipient.usdAmount,
+                            tipsReceived: 1,
+                            tipsReceivedAmount: recipient.usdAmount
+                        }
+                    )
+                }
+            }
+
+            // Send success message
+            const recipientList = recipients
+                .map((r: any) => r.userId ? `<@${r.userId}>` : `${r.wallet.slice(0, 6)}...${r.wallet.slice(-4)}`)
+                .join(', ')
+
+            const mentions = recipients
+                .filter((r: any) => r.userId)
+                .map((r: any) => ({ userId: r.userId, displayName: r.displayName || 'User' }))
+
+            mentions.push({ userId: senderId, displayName: 'Sender' })
+
+            await handler.sendMessage(
+                data.channelId,
+                `💸 <@${senderId}> sent ~$${data.totalUsd.toFixed(2)} (${data.totalEth.toFixed(6)} ETH) split between ${recipientList} in ONE transaction! ⚡\n\n🔗 [View on BaseScan](https://basescan.org/tx/${hash})`,
+                { mentions }
+            )
+
+            // Clean up pending transaction
+            await deletePendingTransaction(tipsplitId)
+
+            debugLog('onTip', 'Tipsplit completed successfully!')
+
+        } catch (error) {
+            debugError('onTip', 'Error processing tipsplit', error)
+            await handler.sendMessage(
+                pendingTx.data.channelId,
+                `❌ Failed to distribute tips. Please contact support. Funds are safe in bot wallet.`
+            )
+        }
+
+    } else {
+        // Regular donation to bot
+        debugLog('onTip', 'Regular donation to bot')
         await handler.sendMessage(
             channelId,
-            `❤️ Thank you for the tip! Received ~$${usdAmount} (${ethAmount.toFixed(6)} ETH)! 🙏`
+            `❤️ Thank you for the tip! Received ~$${usdAmount.toFixed(2)} (${ethAmount.toFixed(6)} ETH)! 🙏`
         )
     }
     
