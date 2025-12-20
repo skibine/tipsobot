@@ -1185,6 +1185,14 @@ debugLog('INIT', 'Health monitor started')
 
 app.get('/', (c) => c.text('TipsoBot is running! 💸'))
 
+app.use('/webhook', async (c, next) => {
+    console.log('=== WEBHOOK DEBUG ===')
+    console.log('Headers:', c.req.header())
+    console.log('Method:', c.req.method)
+    console.log('URL:', c.req.url)
+    await next()
+})
+
 app.post('/webhook', async (c) => {
     const body = await c.req.json()
     
