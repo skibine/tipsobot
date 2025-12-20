@@ -1,6 +1,8 @@
 // Interaction response handlers
 import { BotHandler, BasePayload } from '@towns-protocol/bot'
 import { hexToBytes, parseEther, formatEther } from 'viem'
+import { execute } from 'viem/experimental/erc7821'
+import { waitForTransactionReceipt } from 'viem/actions'
 import {
     getPendingTransaction,
     deletePendingTransaction,
@@ -230,7 +232,7 @@ export async function handleTransactionResponse(
     handler: BotHandler,
     event: any,
     getEthPrice: () => Promise<number>,
-    bot?: any
+    bot: any // Bot instance for executing batch
 ) {
     const transaction = event.response.payload.content.value
     const txId = transaction.requestId
@@ -458,8 +460,133 @@ export async function handleTransactionResponse(
             console.log('[Transaction Response] ✅ Tip successfully processed!')
 
         } else if (originalRequestId.startsWith('tipsplit-')) {
-            // NEW: Tipsplit is handled by bot.onTip() - this shouldn't be called
-            console.log('[Transaction Response] Tipsplit handled by bot.onTip(), ignoring here')
+            // NEW: Execute batch distribution immediately!
+            console.log('[Transaction Response] Processing tipsplit - executing batch...')
+            const data = pendingTx.data
+
+            try {
+                // Build batch calls for execute()
+                const calls = data.recipients.map((r: any) => ({
+                    to: r.wallet as `0x${string}`,
+                    value: parseEther(r.ethAmount.toString()),
+                    data: '0x' as `0x${string}`
+                }))
+
+                console.log('[Transaction Response] Executing batch transfer...', {
+                    recipientCount: calls.length,
+                    totalEth: data.totalEth
+                })
+
+                // Execute batch transfer from bot
+                const hash = await execute(bot.viem, {
+                    address: bot.appAddress as `0x${string}`,
+                    account: bot.viem.account,
+                    calls
+                })
+
+                console.log('[Transaction Response] Batch transaction sent:', hash)
+
+                // Wait for confirmation
+                await waitForTransactionReceipt(bot.viem, { hash })
+
+                console.log('[Transaction Response] Batch transaction confirmed!')
+
+                // Update global stats
+                await updateGlobalStats(spaceId, {
+                    tipsVolume: data.totalUsd,
+                    tipsCount: 1
+                })
+
+                // Update sender stats
+                await upsertUserStats(spaceId, pendingTx.userId, pendingTx.userId, {
+                    sentAmount: data.totalUsd,
+                    tipsSent: 1,
+                    tipsSentAmount: data.totalUsd
+                })
+
+                // Update each recipient's stats
+                for (const recipient of data.recipients) {
+                    if (recipient.userId) {
+                        await upsertUserStats(
+                            spaceId,
+                            recipient.userId,
+                            recipient.displayName || 'User',
+                            {
+                                receivedAmount: recipient.usdAmount,
+                                tipsReceived: 1,
+                                tipsReceivedAmount: recipient.usdAmount
+                            }
+                        )
+                    }
+                }
+
+                // Send success message
+                const recipientList = data.recipients
+                    .map((r: any) => r.userId ? `<@${r.userId}>` : `${r.wallet.slice(0, 6)}...${r.wallet.slice(-4)}`)
+                    .join(', ')
+
+                const mentions = data.recipients
+                    .filter((r: any) => r.userId)
+                    .map((r: any) => ({ userId: r.userId, displayName: r.displayName || 'User' }))
+
+                mentions.push({ userId: pendingTx.userId, displayName: 'Sender' })
+
+                await handler.sendMessage(
+                    data.channelId,
+                    `💸 <@${pendingTx.userId}> sent ~$${data.totalUsd.toFixed(2)} (${data.totalEth.toFixed(6)} ETH) split between ${recipientList} in ONE transaction! ⚡\n\n🔗 [Deposit TX](https://basescan.org/tx/${txHash})\n🔗 [Batch TX](https://basescan.org/tx/${hash})`,
+                    { mentions }
+                )
+
+                // Mark as processed
+                await updatePendingTransactionStatus(originalRequestId, 'processed')
+
+                // Delete transaction form
+                if (pendingTx.transactionMessageId) {
+                    try {
+                        await handler.removeEvent(data.channelId, pendingTx.transactionMessageId)
+                        console.log('[Transaction Response] ✅ Transaction form deleted')
+                    } catch (error) {
+                        console.error('[Transaction Response] ❌ Failed to delete form:', error)
+                    }
+                }
+
+                console.log('[Transaction Response] ✅ Tipsplit successfully processed!')
+
+            } catch (error) {
+                console.error('[Transaction Response] 🔥 Batch execution failed:', error)
+                
+                // Refund to sender
+                try {
+                    console.log('[Transaction Response] Attempting refund to sender...')
+                    const refundAmount = parseEther(data.totalEth.toString())
+                    const senderWallet = await bot.viem.account.address
+
+                    const refundHash = await bot.viem.sendTransaction({
+                        to: pendingTx.userId as `0x${string}`,
+                        value: refundAmount,
+                        account: bot.viem.account
+                    })
+
+                    await waitForTransactionReceipt(bot.viem, { hash: refundHash })
+
+                    await handler.sendMessage(
+                        data.channelId,
+                        `❌ Tipsplit failed! Funds refunded to <@${pendingTx.userId}>.\n\n🔗 [Refund TX](https://basescan.org/tx/${refundHash})`,
+                        { mentions: [{ userId: pendingTx.userId, displayName: 'User' }] }
+                    )
+
+                    console.log('[Transaction Response] ✅ Refund successful')
+                } catch (refundError) {
+                    console.error('[Transaction Response] 🔥 Refund also failed:', refundError)
+                    await handler.sendMessage(
+                        data.channelId,
+                        `⚠️ Tipsplit failed and refund failed! Please contact support. Your funds are safe in bot wallet.`
+                    )
+                }
+
+                // Mark as failed
+                await updatePendingTransactionStatus(originalRequestId, 'failed')
+            }
 
         } else if (originalRequestId.startsWith('donate-')) {
             // Donation
