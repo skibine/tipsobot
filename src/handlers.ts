@@ -18,7 +18,8 @@ import {
 export async function handleFormResponse(
     handler: BotHandler,
     event: any,
-    getEthPrice: () => Promise<number>
+    getEthPrice: () => Promise<number>,
+    bot: any // Bot instance for getting bot address
 ) {
     const form = event.response.payload.content.value
 
@@ -139,41 +140,35 @@ export async function handleFormResponse(
                 }
 
             } else if (form.requestId.startsWith('tipsplit-')) {
-                // Tip split - send multiple transactions
-                let firstTxMessage: any = null
-                for (const recipient of data.recipients) {
-                    const amountWei = parseEther(recipient.ethAmount.toString())
-                    const usdValue = recipient.usdAmount.toFixed(2)
+                // NEW: Tipsplit sends ONE transaction to BOT
+                console.log('[Form Response] Processing tipsplit - sending to bot')
+                
+                const totalAmountWei = parseEther(data.totalEth.toString())
+                const usdValue = data.totalUsd.toFixed(2)
 
-                    const txMessage = await handler.sendInteractionRequest(event.channelId, {
-                        case: 'transaction',
-                        value: {
-                            id: `tx-${form.requestId}-${recipient.userId}`,
-                            title: `Send ~$${usdValue}`,
-                            description: `Transfer ~$${usdValue} (${recipient.ethAmount.toFixed(6)} ETH) on Base\n\nTo: ${recipient.wallet.slice(0, 6)}...${recipient.wallet.slice(-4)}\n\n⚠️ Make sure you have enough ETH for the transfer plus gas (~$0.01)`,
-                            content: {
-                                case: 'evm',
-                                value: {
-                                    chainId: '8453',
-                                    to: recipient.wallet,
-                                    value: amountWei.toString(),
-                                    data: '0x',
-                                    signerWallet: undefined
-                                }
+                const txMessage = await handler.sendInteractionRequest(event.channelId, {
+                    case: 'transaction',
+                    value: {
+                        id: `tx-${form.requestId}`,
+                        title: `Send ~$${usdValue} to TipsoBot`,
+                        description: `Transfer ~$${usdValue} (${data.totalEth.toFixed(6)} ETH) to TipsoBot\n\nBot will split between ${data.recipients.length} recipients\n\n⚡ ONE signature, bot handles distribution!\n\n⚠️ Make sure you have enough ETH for the transfer plus gas (~$0.01)`,
+                        content: {
+                            case: 'evm',
+                            value: {
+                                chainId: '8453',
+                                to: bot.appAddress, // Send to BOT!
+                                value: totalAmountWei.toString(),
+                                data: '0x',
+                                signerWallet: undefined
                             }
                         }
-                    }, hexToBytes(event.userId as `0x${string}`))
-
-                    // Save first transaction message ID
-                    if (!firstTxMessage && txMessage?.eventId) {
-                        firstTxMessage = txMessage
                     }
-                }
+                }, hexToBytes(event.userId as `0x${string}`))
 
-                // Save first transaction message ID for later deletion
-                if (firstTxMessage?.eventId) {
-                    await updateTransactionMessageId(form.requestId, firstTxMessage.eventId)
-                    console.log('[Form Response] Saved first transaction message ID for tipsplit:', firstTxMessage.eventId)
+                // Save transaction message ID
+                if (txMessage?.eventId) {
+                    await updateTransactionMessageId(form.requestId, txMessage.eventId)
+                    console.log('[Form Response] Saved tipsplit transaction message ID:', txMessage.eventId)
                 }
 
             } else if (form.requestId.startsWith('donate-')) {
@@ -234,7 +229,8 @@ export async function handleFormResponse(
 export async function handleTransactionResponse(
     handler: BotHandler,
     event: any,
-    getEthPrice: () => Promise<number>
+    getEthPrice: () => Promise<number>,
+    bot?: any
 ) {
     const transaction = event.response.payload.content.value
     const txId = transaction.requestId
@@ -255,19 +251,13 @@ export async function handleTransactionResponse(
 
     try {
         // Extract the original request ID from transaction ID
-        // Format: tx-{type}-{eventId} or tx-{type}-{eventId}-{recipientUserId} (for tipsplit)
+        // Format: tx-{type}-{eventId}
         const parts = txId.split('-')
         let originalRequestId: string
-        let recipientUserId: string | null = null
 
         if (parts[0] === 'tx' && parts.length >= 3) {
-            // Format: tx-tip-eventId, tx-donate-eventId, tx-contrib-eventId
+            // Format: tx-tip-eventId, tx-donate-eventId, tx-contrib-eventId, tx-tipsplit-eventId
             originalRequestId = `${parts[1]}-${parts[2]}`
-
-            // For tipsplit: tx-tipsplit-eventId-recipientUserId
-            if (parts.length === 4 && parts[1] === 'tipsplit') {
-                recipientUserId = parts[3]
-            }
         } else {
             console.error('[Transaction Response] Invalid transaction ID format:', txId)
             return
@@ -419,21 +409,33 @@ export async function handleTransactionResponse(
                 tipsSent: 1,
                 tipsSentAmount: data.usdAmount
             })
-            await upsertUserStats(spaceId, data.recipientId, data.recipientName, {
-                receivedAmount: data.usdAmount,
-                tipsReceived: 1,
-                tipsReceivedAmount: data.usdAmount
-            })
+
+            // Update recipient stats - handle both mention and direct address
+            if (data.recipientId) {
+                await upsertUserStats(spaceId, data.recipientId, data.recipientName || 'User', {
+                    receivedAmount: data.usdAmount,
+                    tipsReceived: 1,
+                    tipsReceivedAmount: data.usdAmount
+                })
+            }
 
             // Send success message with transaction hash
+            const recipientDisplay = data.recipientId 
+                ? `<@${data.recipientId}>`
+                : `${data.recipientWallet.slice(0, 6)}...${data.recipientWallet.slice(-4)}`
+
+            const mentions = data.recipientId
+                ? [
+                    { userId: pendingTx.userId, displayName: pendingTx.userId },
+                    { userId: data.recipientId, displayName: data.recipientName || 'User' }
+                  ]
+                : [{ userId: pendingTx.userId, displayName: pendingTx.userId }]
+
             const txHashInfo = txHash ? `\n\n🔗 [View on BaseScan](https://basescan.org/tx/${txHash})` : ''
             await handler.sendMessage(
                 data.channelId,
-                `💸 <@${pendingTx.userId}> sent ~$${data.usdAmount.toFixed(2)} (${data.ethAmount.toFixed(6)} ETH) to <@${data.recipientId}>!${txHashInfo}`,
-                { mentions: [
-                    { userId: pendingTx.userId, displayName: pendingTx.userId },
-                    { userId: data.recipientId, displayName: data.recipientName }
-                ] }
+                `💸 <@${pendingTx.userId}> sent ~$${data.usdAmount.toFixed(2)} (${data.ethAmount.toFixed(6)} ETH) to ${recipientDisplay}!${txHashInfo}`,
+                { mentions }
             )
 
             // 🔑 KEY FIX: Mark as processed but DON'T delete
@@ -456,86 +458,8 @@ export async function handleTransactionResponse(
             console.log('[Transaction Response] ✅ Tip successfully processed!')
 
         } else if (originalRequestId.startsWith('tipsplit-')) {
-            // Tip split - need to wait for ALL transactions to complete
-            console.log('[Transaction Response] Processing tipsplit...')
-            if (!recipientUserId) {
-                console.error('[Transaction Response] Missing recipient userId for tipsplit')
-                return
-            }
-
-            const data = pendingTx.data
-
-            // Add this recipient to completed list
-            if (!data.completedRecipients) {
-                data.completedRecipients = []
-            }
-
-            if (!data.completedRecipients.includes(recipientUserId)) {
-                data.completedRecipients.push(recipientUserId)
-                await updatePendingTransaction(originalRequestId, data)
-            }
-
-            console.log(`[Transaction Response] Tipsplit progress: ${data.completedRecipients.length}/${data.recipients.length}`)
-
-            // Check if all transactions are complete
-            if (data.completedRecipients.length === data.recipients.length) {
-                console.log('[Transaction Response] All tipsplit transactions completed!')
-
-                // Update global stats (per space/town)
-                await updateGlobalStats(spaceId, {
-                    tipsVolume: data.totalUsd,
-                    tipsCount: 1
-                })
-
-                // Update user stats (per space/town)
-                await upsertUserStats(spaceId, pendingTx.userId, pendingTx.userId, {
-                    sentAmount: data.totalUsd,
-                    tipsSent: 1,
-                    tipsSentAmount: data.totalUsd
-                })
-
-                // Update each recipient's stats
-                for (const recipient of data.recipients) {
-                    await upsertUserStats(spaceId, recipient.userId, recipient.displayName, {
-                        receivedAmount: recipient.usdAmount,
-                        tipsReceived: 1,
-                        tipsReceivedAmount: recipient.usdAmount
-                    })
-                }
-
-                // Send success message with transaction hash
-                const recipientList = data.recipients.map((r: any) => `<@${r.userId}>`).join(', ')
-                const mentions = [
-                    { userId: pendingTx.userId, displayName: pendingTx.userId },
-                    ...data.recipients.map((r: any) => ({ userId: r.userId, displayName: r.displayName }))
-                ]
-                const txHashInfo = txHash ? `\n\n🔗 [View on BaseScan](https://basescan.org/tx/${txHash})` : ''
-
-                await handler.sendMessage(
-                    data.channelId,
-                    `💸 <@${pendingTx.userId}> sent ~$${data.totalUsd.toFixed(2)} (${data.totalEth.toFixed(6)} ETH) split between ${recipientList}!${txHashInfo}`,
-                    { mentions }
-                )
-
-                // 🔑 KEY FIX: Mark as processed but DON'T delete
-                console.log('[Transaction Response] Marking tipsplit as processed (keeping in DB for 7 days)')
-                await updatePendingTransactionStatus(originalRequestId, 'processed')
-
-                // Delete transaction confirmation form
-                console.log('[Transaction Response] pendingTx.transactionMessageId:', pendingTx.transactionMessageId)
-                if (pendingTx.transactionMessageId) {
-                    try {
-                        await handler.removeEvent(data.channelId, pendingTx.transactionMessageId)
-                        console.log('[Transaction Response] ✅ Transaction form deleted successfully')
-                    } catch (error) {
-                        console.error('[Transaction Response] ❌ Failed to delete transaction form:', error)
-                    }
-                } else {
-                    console.log('[Transaction Response] ⚠️ No transaction_message_id found, cannot delete transaction form')
-                }
-
-                console.log('[Transaction Response] ✅ Tipsplit successfully processed!')
-            }
+            // NEW: Tipsplit is handled by bot.onTip() - this shouldn't be called
+            console.log('[Transaction Response] Tipsplit handled by bot.onTip(), ignoring here')
 
         } else if (originalRequestId.startsWith('donate-')) {
             // Donation
