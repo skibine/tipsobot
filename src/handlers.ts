@@ -460,11 +460,38 @@ export async function handleTransactionResponse(
             console.log('[Transaction Response] ✅ Tip successfully processed!')
 
         } else if (originalRequestId.startsWith('tipsplit-')) {
-            // NEW: Execute batch distribution immediately!
-            console.log('[Transaction Response] Processing tipsplit - executing batch...')
-            const data = pendingTx.data
+  console.log('[Transaction Response] Processing tipsplit...')
+  const data = pendingTx.data
+  
+  // Check txHash exists
+  if (!txHash) {
+    console.error('[Transaction Response] No txHash for tipsplit!')
+    await handler.sendMessage(data.channelId, `❌ No transaction hash found.`)
+    await updatePendingTransactionStatus(originalRequestId, 'failed')
+    return
+  }
+  
+  // CRITICAL: Wait for user's deposit transaction to be confirmed on blockchain
+  console.log('[Transaction Response] Waiting for deposit tx confirmation...', txHash)
+  const receipt = await waitForTransactionReceipt(bot.viem, { 
+    hash: txHash as `0x${string}` 
+  })
+  
+  // Check if transaction succeeded
+  if (receipt.status !== 'success') {
+    console.error('[Transaction Response] Deposit transaction failed!')
+    await handler.sendMessage(
+      data.channelId,
+      `❌ Deposit transaction failed. Money never left your wallet.`
+    )
+    await updatePendingTransactionStatus(originalRequestId, 'failed')
+    return
+  }
+  
+  console.log('[Transaction Response] ✅ Deposit confirmed! Now executing batch...')
+  
+  try {
 
-            try {
                 // Build batch calls for execute()
                 const calls = data.recipients.map((r: any) => ({
                     to: r.wallet as `0x${string}`,
